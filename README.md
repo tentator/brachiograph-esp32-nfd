@@ -82,11 +82,7 @@ mpremote cp ssd1306.py :ssd1306.py
 mpremote cp brachio-codez-oled-10.py :main.py
 ```
 
-> Use the `ssd1306.py` from this folder unchanged. A modified driver on the board once made
-> the display fail silently; the code now prints the error instead, but the fix is to
-> re-upload the original.
-
-`config.json` (your calibration) is created on the board automatically the first time you
+`config.json` (calibration settings) is created on the board automatically the first time you
 press *Apply Config*.
 
 ---
@@ -97,7 +93,7 @@ There are two ways to run it:
 
 **A. From Thonny (while developing).** Open the script and press **Run (F5)**. All messages
 (I2C scan, IP address, every page request) appear in Thonny's shell. Don't press Stop or
-Ctrl-C while using the web page; that ends the server.
+Ctrl-C while using the web page: that ends the server.
 
 **B. Standalone.** Save it as `main.py`, close Thonny (or *Run → Disconnect*), then press
 RESET or power-cycle the board.
@@ -348,12 +344,8 @@ In the web page's script:
 | `ESP32_GENERIC_C3-20260824-v1.29.0.bin` | MicroPython firmware for the ESP32-C3 |
 | `square-svg.svg` | 40x40 test square for the SVG plotter |
 | `brachiograph-esp32-nfd/` | Git repository (first working port, = REV 3 era) |
-| `Brachiograph on an ESP32 with Mycrophyton and Browser based upload.pdf` | Original notes on the approach |
 
 Revisions (each in its own file, older ones kept for fallback):
-
-Numbered by file (`brachio-codez-1.py`, `brachio-codez-oled-N.py`). Files 4–6 show an older
-`REVISION` string (REV 3.0–5.0); from file 7 on, the two numbers match.
 
 | File | Changes |
 |---|---|
