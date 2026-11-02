@@ -71,7 +71,7 @@
   <canvas id="preview" width="360" height="250"></canvas>
   <div id="svgHolder" style="position:absolute; width:0; height:0; overflow:hidden; visibility:hidden;"></div>
   <div style="font-size:13px; margin-bottom:6px;"><label><input type="checkbox" id="autoRotate" checked> Rotate 90° when that makes the drawing bigger</label></div>
-  <button id="plotBtn" style="width:100%;" disabled onclick="startPlot()">Plot Loaded SVG</button>
+  <button id="plotBtn" style="width:100%;" disabled onclick="startPlot()">Plot Drawing</button>
 </div>
 
 <div class="card">
@@ -89,11 +89,32 @@
     <button class="alt" onclick="convertImage()">Re-convert</button>
     <button class="alt" id="svgDownload" disabled onclick="downloadSvg()">Download SVG</button>
   </div>
-  <div style="font-size:12px; color:#555;">The preview above updates when you change a setting; use "Plot Loaded SVG" to draw it.</div>
+  <div style="font-size:12px; color:#555;">The preview above updates when you change a setting; use "Plot Drawing" to draw it.</div>
 </div>
 
 <div class="card">
-  <h4>6. Live Calibration</h4>
+  <h4>6. Text</h4>
+  <textarea id="txtInput" rows="3" maxlength="120" placeholder="Type your text (up to 3 lines)"
+    style="width:100%; box-sizing:border-box; font-size:15px; padding:6px;"></textarea>
+  <div class="grid" style="margin-top:8px;">
+    <div>Font: <select id="txtFont">
+      <option value="script">Script (handwriting)</option>
+      <option value="block">Block</option>
+      <option value="bold">Block bold</option>
+    </select></div>
+    <div>Align: <select id="txtAlign">
+      <option value="center">Centre</option>
+      <option value="left">Left</option>
+    </select></div>
+    <div>Letter height (mm): <input type="text" inputmode="decimal" id="txtSize" value="10" style="width:68px; padding:4px;"></div>
+    <div><label><input type="checkbox" id="txtAuto" checked> Largest that fits</label></div>
+  </div>
+  <div style="font-size:12px; color:#555;">Words wrap automatically, max 3 lines. The preview is shown above; use "Plot Drawing" to draw it.
+    Fonts: Hershey fonts by Dr. A. V. Hershey (U.S. National Bureau of Standards); data format by James Hurt, Cognition, Inc.</div>
+</div>
+
+<div class="card">
+  <h4>7. Live Calibration</h4>
   <div class="grid">
     <div>S1 Park: <input class="cfg" type="number" id="s1_ang" value="-90.0" step="1"></div>
     <div>S2 Park: <input class="cfg" type="number" id="s2_ang" value="90.0" step="1"></div>
@@ -473,15 +494,16 @@ function simplify(pts, eps) {
 
 // Fits polylines (any units, y pointing down as in SVG/images) onto the bed,
 // fills motionQueue and draws the preview.
-function buildQueue(sampled, minX, maxX, minY, maxY) {
-  lastDrawing = [sampled, minX, maxX, minY, maxY];
+// opts.scale: fixed mm per source unit instead of fitting the area; opts.upright: never rotate
+function buildQueue(sampled, minX, maxX, minY, maxY, opts = {}) {
+  lastDrawing = [sampled, minX, maxX, minY, maxY, opts];
   const bedW = (BED.maxX - BED.minX) * 0.9, bedH = (BED.maxY - BED.minY) * 0.9;
   const w = maxX - minX || 1, h = maxY - minY || 1;
   const scaleUpright = Math.min(bedW / w, bedH / h);
   const scaleRotated = Math.min(bedW / h, bedH / w);  // width and height swap when turned
   // Turn the drawing (e.g. a portrait image on a landscape area) if it then comes out bigger
-  const rotate = document.getElementById('autoRotate').checked && scaleRotated > scaleUpright * 1.01;
-  const scale = rotate ? scaleRotated : scaleUpright;
+  const rotate = !opts.upright && document.getElementById('autoRotate').checked && scaleRotated > scaleUpright * 1.01;
+  const scale = opts.scale || (rotate ? scaleRotated : scaleUpright);
   const cX = (minX + maxX)/2, cY = (minY + maxY)/2;
   const bcX = (BED.minX + BED.maxX)/2, bcY = (BED.minY + BED.maxY)/2;
   // Source y points down (SVG/images), bed y points up. Rotated = 90° clockwise:
@@ -719,6 +741,147 @@ function downloadSvg() {
   a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }
+
+// ---------- Text (single-stroke Hershey fonts) ----------
+// The Hershey Fonts were originally created by Dr. A. V. Hershey while working at the
+// U. S. National Bureau of Standards. The format of the font data was originally
+// created by James Hurt, Cognition, Inc., 900 Technology Park Drive, Billerica, MA 01821.
+// Each glyph (ASCII 32..126) is a string: left and right bounds, then x/y pairs
+// encoded as character codes relative to 'R'; " R" lifts the pen. y points down,
+// capitals span y -12..9 (21 units), the baseline is y = 9.
+const FONTS = {"script":["JZ","MXUFTGRS RUGRS RUFVGRS RPYOZP[QZPY","I[PFNM RQFNM RYFWM RZFWM","H]SBLb RYBRb RLOZO RKUYU","H]TBL_ RYBQ_ RZJYKZL[K[JZHYGVFRFOGMIMKNMONVRXT RMKOMVQWRXTXWWYVZS[O[LZKYJWJVKULVKW","F^[FI[ RNFPHPJOLMMKMIKIIJGLFNFPGSHVHYG[F RWTUUTWTYV[X[ZZ[X[VYTWT","E_\\N[O\\P]O]N\\M[MYNWPRXPZN[K[HZGXGVHTISKRPPROTMUKUITGRFPGOIOLPRQUSXUZW[Y[ZYZX RK[IZHXHVITJSPP ROLPQQTSWUYWZYZZY","MXUHTGUFVGVHUJSL","KZZBVESHQKOONTNXO]P`Qb RVESIQMPPOUOZP_Qb","JYSBTDUGVLVPUUSYQ\\N_Jb RSBTEUJUOTTSWQ[N_","J[TFTR ROIYO RYIOO","E_RIR[ RIR[R","MXP[OZPYQZQ[P]N_","E_IR[R","MWRYQZR[SZRY","G]_BEb","H]TFQGOIMLLOKSKVLYMZO[Q[TZVXXUYRZNZKYHXGVFTF RTFRGPINLMOLSLVMYO[ RQ[SZUXWUXRYNYKXHVF","H]TJO[ RVFP[ RVFSIPKNL RUIQKNL","H]OJPKOLNKNJOHPGSFVFYGZIZKYMWOTQPSMUKWI[ RVFXGYIYKXMVOPS RJYKXMXRZUZWYXW RMXR[U[WZXW","H]OJPKOLNKNJOHPGSFVFYGZIZKYMVOSP RVFXGYIYKXMVO RQPSPVQWRXTXWWYVZS[O[LZKYJWJVKULVKW RSPUQVRWTWWVYUZS[","H]XGR[ RYFS[ RYFJUZU","H]QFLP RQF[F RQGVG[F RLPMOPNSNVOWPXRXUWXUZR[O[LZKYJWJVKULVKW RSNUOVPWRWUVXTZR[","H]YIXJYKZJZIYGWFTFQGOIMLLOKSKWLYMZO[R[UZWXXVXSWQVPTOQOOPMRLT RTFRGPINLMOLSLXMZ RR[TZVXWVWRVP","H]NFLL R[FZIXLSRQUPWO[ RXLRRPUOWN[ RMIPFRFWI RNHPGRGWIYIZH[F","H]SFPGOHNJNMOOQPTPXOYNZLZIYGVFSF RSFQGPHOJOMPOQP RTPWOXNYLYIXGVF RQPMQKSJUJXKZN[R[VZWYXWXTWRVQTP RQPNQLSKUKXLZN[ RR[UZVYWWWSVQ","H]YMXOVQTRQROQNPMNMKNIPGSFVFXGYHZJZNYRXUVXTZQ[N[LZKXKWLVMWLX ROQNONKOIQGSF RXGYIYNXRWUUXSZQ[","MXSMRNSOTNSM RPYOZP[QZ","MXSMRNSOTNSM RP[OZPYQZQ[P]N_","F^ZIJRZ[","E_IO[O RIU[U","F^JIZRJ[","H]OJPKOLNKNJOHPGSFWFZG[I[KZMYNSPQQQSRTTT RWFYGZIZKYMXNVO RPYOZP[QZPY","E`WNVLTKQKOLNMMPMSNUPVSVUUVS RQKOMNPNSOUPV RWKVSVUXVZV\\T]Q]O\\L[JYHWGTFQFNGLHJJILHOHRIUJWLYNZQ[T[WZYYZX RXKWSWUXV","G[G[IZLWOSSLVFV[UXSUQSNQLQKRKTLVNXQZT[Y[","F]SHTITLSPRSQUOXMZK[J[IZIWJRKOLMNJPHRGUFXFZG[I[KZMYNWOTP RSPTPWQXRYTYWXYWZU[R[PZOX","H\\TLTMUNWNYMZKZIYGWFTFQGOIMLLNKRKVLYMZO[Q[TZVXWV","G^TFRGQIPMOSNVMXKZI[G[FZFXGWIWKXMZP[S[VZXXZT[O[KZHYGWFTFRHRJSMUPWRZT\\U","H\\VJVKWLYLZKZIYGVFRFOGNINLONPOSPPPMQLRKTKWLYMZP[S[VZXXYV","H\\RLPLNKMINGQFTFXG[G]F RXGVNTTRXPZN[L[JZIXIVJULUNV RQPZP","G^G[IZMVPQQNRJRGQFPFOGNINLONQOUOXNYMZKZQYVXXVZS[O[LZJXIVIT","F^MMKLJJJIKGMFNFPGQIQKPONULYJ[H[GZGX RMRVOXN[L]J^H^G]F\\FZHXLVRUWUZV[W[YZZY\\V","IZWVUTSQROQLQIRGSFUFVGWIWLVQTVSXQZO[M[KZJXJVKUMUOV","JYT^R[PVOPOJPGRFTFUGVJVMURR[PaOdNfLgKfKdLaN^P\\SZWX","F^MMKLJJJIKGMFNFPGQIQKPONULYJ[H[GZGX R^I^G]F\\FZGXIVLTNROPO RROSQSXTZU[V[XZYY[V","I\\MRORSQVOXMYKYHXFVFUGTISNRSQVPXNZL[J[IZIXJWLWNXQZT[V[YZ[X","@aEMCLBJBICGEFFFHGIIIKHPGTE[ RGTJLLHMGOFPFRGSISKRPQTO[ RQTTLVHWGYFZF\\G]I]K\\PZWZZ[[\\[^Z_YaV","E]JMHLGJGIHGJFKFMGNINKMPLTJ[ RLTOLQHRGTFVFXGYIYKXPVWVZW[X[ZZ[Y]V","H]TFQGOIMLLNKRKVLYMZO[Q[TZVXXUYSZOZKYHXGVFTFRHRKSNUQWSZU\\V","F_SHTITLSPRSQUOXMZK[J[IZIWJRKOLMNJPHRGUFZF\\G]H^J^M]O\\PZQWQUPTO","H^ULTNSOQPOPNNNLOIQGTFWFYGZIZMYPWSSWPYNZK[I[HZHXIWKWMXPZS[V[YZ[X","F_SHTITLSPRSQUOXMZK[J[IZIWJRKOLMNJPHRGUFYF[G\\H]J]M\\O[PYQVQSPTQUSUXVZX[ZZ[Y]V","H\\H[JZLXOTQQSMTJTGSFRFQGPIPKQMSOVQXSYUYWXYWZT[P[MZKXJVJT","H[RLPLNKMINGQFTFXG[G]F RXGVNTTRXPZN[L[JZIXIVJULUNV","E]JMHLGJGIHGJFKFMGNINKMOLRKVKXLZN[P[RZSYUUXMZF RXMWQVWVZW[X[ZZ[Y]V","F]KMILHJHIIGKFLFNGOIOKNOMRLVLYM[O[QZTWVTXPYMZIZGYFXFWGVIVKWNYP[Q","C_HMFLEJEIFGHFIFKGLILLK[ RUFK[ RUFS[ RaF_G\\JYNVTS[","F^NLLLKKKILGNFPFRGSISLQUQXRZT[V[XZYXYVXUVU R]I]G\\FZFXGVITLPUNXLZJ[H[GZGX","F]KMILHJHIIGKFLFNGOIOKNOMRLVLXMZN[P[RZTXVUWSYM R[FYMVWT]RbPfNgMfMdNaP^S[VY[V","H]ULTNSOQPOPNNNLOIQGTFWFYGZIZMYPWTTWPZN[K[JZJXKWNWPXQYR[R^QaPcNfLgKfKdLaN^Q[TYZV","KYOBOb RPBPb ROBVB RObVb","KYKFY^","KYTBTb RUBUb RNBUB RNbUb","JZPLRITL RMORJWO RRJR[","JZJ]Z]","MXVFTHSJSKTLUKTJ","L\\UUTSRRPRNSMTLVLXMZO[Q[SZTXVRUWUZV[W[YZZY\\V","M[MVOSRNSLTITGSFQGPIOMNTNZO[P[RZTXUUURVVWWYW[V","MXTTTSSRQROSNTMVMXNZP[S[VYXV","L\\UUTSRRPRNSMTLVLXMZO[Q[SZTXZF RVRUWUZV[W[YZZY\\V","NXOYQXRWSUSSRRQROSNUNXOZQ[S[UZVYXV","OWOVSQUNVLWIWGVFTGSIQQNZKaJdJfKgMfNcOZP[R[TZUYWV","L[UUTSRRPRNSMTLVLXMZO[Q[SZTY RVRTYPdOfMgLfLdMaP^S\\U[XY[V","M\\MVOSRNSLTITGSFQGPIOMNSM[ RM[NXOVQSSRURVSVUUXUZV[W[YZZY\\V","PWSMSNTNTMSM RPVRRPXPZQ[R[TZUYWV","PWSMSNTNTMSM RPVRRLdKfIgHfHdIaL^O\\Q[TYWV","M[MVOSRNSLTITGSFQGPIOMNSM[ RM[NXOVQSSRURVSVUTVQV RQVSWTZU[V[XZYY[V","OWOVQSTNULVIVGUFSGRIQMPTPZQ[R[TZUYWV","E^EVGSIRJSJTIXH[ RIXJVLSNRPRQSQTPXO[ RPXQVSSURWRXSXUWXWZX[Y[[Z\\Y^V","J\\JVLSNROSOTNXM[ RNXOVQSSRURVSVUUXUZV[W[YZZY\\V","LZRRPRNSMTLVLXMZO[Q[SZTYUWUUTSRRQSQURWTXWXYWZV","KZKVMSNQMUGg RMUNSPRRRTSUUUWTYSZQ[ RMZO[R[UZWYZV","L[UUTSRRPRNSMTLVLXMZO[Q[SZ RVRUUSZPaOdOfPgRfScS\\U[XY[V","MZMVOSPQPSSSTTTVSYSZT[U[WZXYZV","NYNVPSQQQSSVTXTZR[ RNZP[T[VZWYYV","OXOVQSSO RVFPXPZQ[S[UZVYXV RPNWN","L[LVNRLXLZM[O[QZSXUU RVRTXTZU[V[XZYY[V","L[LVNRMWMZN[O[RZTXUUUR RURVVWWYW[V","I^LRJTIWIYJ[L[NZPX RRRPXPZQ[S[UZWXXUXR RXRYVZW\\W^V","JZJVLSNRPRQSQZR[U[XYZV RWSVRTRSSOZN[L[KZ","L[LVNRLXLZM[O[QZSXUU RVRPdOfMgLfLdMaP^S\\U[XY[V","LZLVNSPRRRTTTVSXQZN[P\\Q^QaPdOfMgLfLdMaP^S\\WYZV","KYTBRCQDPFPHQJRKSMSOQQ RRCQEQGRISJTLTNSPORSTTVTXSZR[Q]Q_Ra RQSSUSWRYQZP\\P^Q`RaTb","NVRBRb","KYPBRCSDTFTHSJRKQMQOSQ RRCSESGRIQJPLPNQPURQTPVPXQZR[S]S_Ra RSSQUQWRYSZT\\T^S`RaPb","F^IUISJPLONOPPTSVTXTZS[Q RISJQLPNPPQTTVUXUZT[Q[O"],"block":["JZ","MWRFRT RRYQZR[SZRY","JZNFNM RVFVM","H]SBLb RYBRb RLOZO RKUYU","H\\PBP_ RTBT_ RYIWGTFPFMGKIKKLMMNOOUQWRXSYUYXWZT[P[MZKX","F^[FI[ RNFPHPJOLMMKMIKIIJGLFNFPGSHVHYG[F RWTUUTWTYV[X[ZZ[X[VYTWT","E_\\O\\N[MZMYNXPVUTXRZP[L[JZIYHWHUISJRQNRMSKSIRGPFNGMIMKNNPQUXWZY[[[\\Z\\Y","MWRHQGRFSGSIRKQL","KYVBTDRGPKOPOTPYR]T`Vb","KYNBPDRGTKUPUTTYR]P`Nb","JZRLRX RMOWU RWOMU","E_RIR[ RIR[R","NVSWRXQWRVSWSYQ[","E_IR[R","NVRVQWRXSWRV","G][BIb","H\\QFNGLJKOKRLWNZQ[S[VZXWYRYOXJVGSFQF","H\\NJPISFS[","H\\LKLJMHNGPFTFVGWHXJXLWNUQK[Y[","H\\MFXFRNUNWOXPYSYUXXVZS[P[MZLYKW","H\\UFKTZT RUFU[","H\\WFMFLOMNPMSMVNXPYSYUXXVZS[P[MZLYKW","H\\XIWGTFRFOGMJLOLTMXOZR[S[VZXXYUYTXQVOSNRNOOMQLT","H\\YFO[ RKFYF","H\\PFMGLILKMMONSOVPXRYTYWXYWZT[P[MZLYKWKTLRNPQOUNWMXKXIWGTFPF","H\\XMWPURRSQSNRLPKMKLLINGQFRFUGWIXMXRWWUZR[P[MZLX","NVROQPRQSPRO RRVQWRXSWRV","NVROQPRQSPRO RSWRXQWRVSWSYQ[","F^ZIJRZ[","E_IO[O RIU[U","F^JIZRJ[","I[LKLJMHNGPFTFVGWHXJXLWNVORQRT RRYQZR[SZRY","E`WNVLTKQKOLNMMPMSNUPVSVUUVS RQKOMNPNSOUPV RWKVSVUXVZV\\T]Q]O\\L[JYHWGTFQFNGLHJJILHOHRIUJWLYNZQ[T[WZYYZX RXKWSWUXV","I[RFJ[ RRFZ[ RMTWT","G\\KFK[ RKFTFWGXHYJYLXNWOTP RKPTPWQXRYTYWXYWZT[K[","H]ZKYIWGUFQFOGMILKKNKSLVMXOZQ[U[WZYXZV","G\\KFK[ RKFRFUGWIXKYNYSXVWXUZR[K[","H[LFL[ RLFYF RLPTP RL[Y[","HZLFL[ RLFYF RLPTP","H]ZKYIWGUFQFOGMILKKNKSLVMXOZQ[U[WZYXZVZS RUSZS","G]KFK[ RYFY[ RKPYP","NVRFR[","JZVFVVUYTZR[P[NZMYLVLT","G\\KFK[ RYFKT RPOY[","HYLFL[ RL[X[","F^JFJ[ RJFR[ RZFR[ RZFZ[","G]KFK[ RKFY[ RYFY[","G]PFNGLIKKJNJSKVLXNZP[T[VZXXYVZSZNYKXIVGTFPF","G\\KFK[ RKFTFWGXHYJYMXOWPTQKQ","G]PFNGLIKKJNJSKVLXNZP[T[VZXXYVZSZNYKXIVGTFPF RSWY]","G\\KFK[ RKFTFWGXHYJYLXNWOTPKP RRPY[","H\\YIWGTFPFMGKIKKLMMNOOUQWRXSYUYXWZT[P[MZKX","JZRFR[ RKFYF","G]KFKULXNZQ[S[VZXXYUYF","I[JFR[ RZFR[","F^HFM[ RRFM[ RRFW[ R\\FW[","H\\KFY[ RYFK[","I[JFRPR[ RZFRP","H\\YFK[ RKFYF RK[Y[","KYOBOb RPBPb ROBVB RObVb","KYKFY^","KYTBTb RUBUb RNBUB RNbUb","JZRDJR RRDZR","I[Ib[b","NVSKQMQORPSORNQO","I\\XMX[ RXPVNTMQMONMPLSLUMXOZQ[T[VZXX","H[LFL[ RLPNNPMSMUNWPXSXUWXUZS[P[NZLX","I[XPVNTMQMONMPLSLUMXOZQ[T[VZXX","I\\XFX[ RXPVNTMQMONMPLSLUMXOZQ[T[VZXX","I[LSXSXQWOVNTMQMONMPLSLUMXOZQ[T[VZXX","MYWFUFSGRJR[ ROMVM","I\\XMX]W`VaTbQbOa RXPVNTMQMONMPLSLUMXOZQ[T[VZXX","I\\MFM[ RMQPNRMUMWNXQX[","NVQFRGSFREQF RRMR[","MWRFSGTFSERF RSMS^RaPbNb","IZMFM[ RWMMW RQSX[","NVRFR[","CaGMG[ RGQJNLMOMQNRQR[ RRQUNWMZM\\N]Q][","I\\MMM[ RMQPNRMUMWNXQX[","I\\QMONMPLSLUMXOZQ[T[VZXXYUYSXPVNTMQM","H[LMLb RLPNNPMSMUNWPXSXUWXUZS[P[NZLX","I\\XMXb RXPVNTMQMONMPLSLUMXOZQ[T[VZXX","KXOMO[ ROSPPRNTMWM","J[XPWNTMQMNNMPNRPSUTWUXWXXWZT[Q[NZMX","MYRFRWSZU[W[ ROMVM","I\\MMMWNZP[S[UZXW RXMX[","JZLMR[ RXMR[","G]JMN[ RRMN[ RRMV[ RZMV[","J[MMX[ RXMM[","JZLMR[ RXMR[P_NaLbKb","J[XMM[ RMMXM RM[X[","KYTBRCQDPFPHQJRKSMSOQQ RRCQEQGRISJTLTNSPORSTTVTXSZR[Q]Q_Ra RQSSUSWRYQZP\\P^Q`RaTb","NVRBRb","KYPBRCSDTFTHSJRKQMQOSQ RRCSESGRIQJPLPNQPURQTPVPXQZR[S]S_Ra RSSQUQWRYSZT\\T^S`RaPb","F^IUISJPLONOPPTSVTXTZS[Q RISJQLPNPPQTTVUXUZT[Q[O"],"bold":["JZ","MXRFRTST RRFSFST RRXQYQZR[S[TZTYSXRX RRYRZSZSYRY","I[NFMGMM RNGMM RNFOGMM RWFVGVM RWGVM RWFXGVM","H]SBLb RYBRb RLOZO RKUYU","I\\RBR_S_ RRBSBS_ RWIYIWGTFQFNGLILKMMNNVRWSXUXWWYTZQZOYNX RWIVHTGQGNHMIMKNMVQXSYUYWXYWZT[Q[NZLXNX RXXUZ","F^[FI[ RNFPHPJOLMMKMIKIIJGLFNFPGSHVHYG[F RWTUUTWTYV[X[ZZ[X[VYTWT","F_[NZO[P\\O\\N[MZMYNXPVUTXRZP[M[JZIXIUJSPORMSKSIRGPFNGMIMKNNPQUXWZZ[[[\\Z\\Y RM[KZJXJUKSMQ RMKNMVXXZZ[","NWSFRGRM RSGRM RSFTGRM","KYVBTDRGPKOPOTPYR]T`Vb RTDRHQKPPPTQYR\\T`","KYNBPDRGTKUPUTTYR]P`Nb RPDRHSKTPTTSYR\\P`","JZRFQGSQRR RRFRR RRFSGQQRR RMINIVOWO RMIWO RMIMJWNWO RWIVINOMO RWIMO RWIWJMNMO","F_RIRZSZ RRISISZ RJQ[Q[R RJQJR[R","MXTZS[R[QZQYRXSXTYT\\S^Q_ RRYRZSZSYRY RS[T\\ RTZS^","E_IR[R","MXRXQYQZR[S[TZTYSXRX RRYRZSZSYRY","G^[BIbJb R[B\\BJb","H\\QFNGLJKOKRLWNZQ[S[VZXWYRYOXJVGSFQF ROGMJLOLRMWOZ RNYQZSZVY RUZWWXRXOWJUG RVHSGQGNH","H\\NJPISFS[ RNJNKPJRHR[S[","H\\LKLJMHNGPFTFVGWHXJXLWNUQL[ RLKMKMJNHPGTGVHWJWLVNTQK[ RLZYZY[ RK[Y[","H\\MFXFQO RMFMGWG RWFPO RQNSNVOXQYTYUXXVZS[P[MZLYKWLW RPOSOVPXS RTOWQXTXUWXTZ RXVVYSZPZMYLW ROZLX","H\\UIU[V[ RVFV[ RVFKVZV RUILV RLUZUZV","H\\MFLO RNGMN RMFWFWG RNGWG RMNPMSMVNXPYSYUXXVZS[P[MZLYKWLW RLOMOONSNVOXR RTNWPXSXUWXTZ RXVVYSZPZMYLW ROZLX","H\\VGWIXIWGTFRFOGMJLOLTMXOZR[S[VZXXYUYTXQVOSNRNOOMQ RWHTGRGOH RPGNJMOMTNXQZ RMVOYRZSZVYXV RTZWXXUXTWQTO RXSVPSOROOPMS RQONQMT","H\\KFYFO[ RKFKGXG RXFN[O[","H\\PFMGLILKMMNNPOTPVQWRXTXWWYTZPZMYLWLTMRNQPPTOVNWMXKXIWGTFPF RNGMIMKNMPNTOVPXRYTYWXYWZT[P[MZLYKWKTLRNPPOTNVMWKWIVG RWHTGPGMH RLXOZ RUZXX","H\\WPURRSQSNRLPKMKLLINGQFRFUGWIXMXRWWUZR[P[MZLXMXNZ RWMVPSR RWNUQRRQRNQLN RPRMPLMLLMIPG RLKNHQGRGUHWK RSGVIWMWRVWTZ RUYRZPZMY","MXRMQNQORPSPTOTNSMRM RRNROSOSNRN RRXQYQZR[S[TZTYSXRX RRYRZSZSYRY","MXRMQNQORPSPTOTNSMRM RRNROSOSNRN RTZS[R[QZQYRXSXTYT\\S^Q_ RRYRZSZSYRY RS[T\\ RTZS^","F^ZIJRZ[","F_JM[M[N RJMJN[N RJU[U[V RJUJV[V","F^JIZRJ[","I\\LKLJMHNGQFTFWGXHYJYLXNWOUPRQ RLKMKMJNHQGTGWHXJXLWNUORP RMIPG RUGXI RXMTP RRPRTSTSP RRXQYQZR[S[TZTYSXRX RRYRZSZSYRY","E`WNVLTKQKOLNMMPMSNUPVSVUUVS RQKOMNPNSOUPV RWKVSVUXVZV\\T]Q]O\\L[JYHWGTFQFNGLHJJILHOHRIUJWLYNZQ[T[WZYYZX RXKWSWUXV","H\\RFJ[ RRIK[J[ RRIY[Z[ RRFZ[ RMUWU RLVXV","H\\LFL[ RMGMZ RLFTFWGXHYJYMXOWPTQ RMGTGWHXJXMWOTP RMPTPWQXRYTYWXYWZT[L[ RMQTQWRXTXWWYTZMZ","H]ZKYIWGUFQFOGMILKKNKSLVMXOZQ[U[WZYXZV RZKYKXIWHUGQGOHMKLNLSMVOYQZUZWYXXYVZV","H]LFL[ RMGMZ RLFSFVGXIYKZNZSYVXXVZS[L[ RMGSGVHWIXKYNYSXVWXVYSZMZ","I\\MFM[ RNGNZ RMFYF RNGYGYF RNPTPTQ RNQTQ RNZYZY[ RM[Y[","I[MFM[ RNGN[M[ RMFYF RNGYGYF RNPTPTQ RNQTQ","H]ZKYIWGUFQFOGMILKKNKSLVMXOZQ[U[WZYXZVZRUR RZKYKXIWHUGQGOHNIMKLNLSMVNXOYQZUZWYXXYVYSUSUR","G]KFK[ RKFLFL[K[ RYFXFX[Y[ RYFY[ RLPXP RLQXQ","NWRFR[S[ RRFSFS[","J[VFVVUYSZQZOYNVMV RVFWFWVVYUZS[Q[OZNYMV","H]LFL[M[ RLFMFM[ RZFYFMR RZFMS RPOY[Z[ RQOZ[","IZMFM[ RMFNFNZ RNZYZY[ RM[Y[","F^JFJ[ RKKK[J[ RKKR[ RJFRX RZFRX RYKR[ RYKY[Z[ RZFZ[","G]KFK[ RLIL[K[ RLIY[ RKFXX RXFXX RXFYFY[","G]PFNGLIKKJNJSKVLXNZP[T[VZXXYVZSZNYKXIVGTFPF RQGNHLKKNKSLVNYQZSZVYXVYSYNXKVHSGQG","H\\LFL[ RMGM[L[ RLFUFWGXHYJYMXOWPUQMQ RMGUGWHXJXMWOUPMP","G]PFNGLIKKJNJSKVLXNZP[T[VZXXYVZSZNYKXIVGTFPF RQGNHLKKNKSLVNYQZSZVYXVYSYNXKVHSGQG RSXX]Y] RSXTXY]","H\\LFL[ RMGM[L[ RLFTFWGXHYJYMXOWPTQMQ RMGTGWHXJXMWOTPMP RRQX[Y[ RSQY[","H\\YIWGTFPFMGKIKKLMMNOOTQVRWSXUXXWYTZPZNYMXKX RYIWIVHTGPGMHLILKMMONTPVQXSYUYXWZT[P[MZKX","J[RGR[ RSGS[R[ RLFYFYG RLFLGYG","G]KFKULXNZQ[S[VZXXYUYF RKFLFLUMXNYQZSZVYWXXUXFYF","H\\JFR[ RJFKFRX RZFYFRX RZFR[","E_GFM[ RGFHFMX RRFMX RRIM[ RRIW[ RRFWX R]F\\FWX R]FW[","H\\KFX[Y[ RKFLFY[ RYFXFK[ RYFL[K[","I\\KFRPR[S[ RKFLFSP RZFYFRP RZFSPS[","H\\XFK[ RYFL[ RKFYF RKFKGXG RLZYZY[ RK[Y[","KYOBOb RPBPb ROBVB RObVb","KYKFY^","KYTBTb RUBUb RNBUB RNbUb","G]JTROZT RJTRPZT","H\\Hb\\b","LXPFUL RPFOGUL","H\\WMW[X[ RWMXMX[ RWPUNSMPMNNLPKSKULXNZP[S[UZWX RWPSNPNNOMPLSLUMXNYPZSZWX","H\\LFL[M[ RLFMFM[ RMPONQMTMVNXPYSYUXXVZT[Q[OZMX RMPQNTNVOWPXSXUWXVYTZQZMX","I[XPVNTMQMONMPLSLUMXOZQ[T[VZXX RXPWQVOTNQNOONPMSMUNXOYQZTZVYWWXX","H\\WFW[X[ RWFXFX[ RWPUNSMPMNNLPKSKULXNZP[S[UZWX RWPSNPNNOMPLSLUMXNYPZSZWX","I[MTXTXQWOVNTMQMONMPLSLUMXOZQ[T[VZXX RMSWSWQVOTNQNOONPMSMUNXOYQZTZVYWWXX","LZWFUFSGRJR[S[ RWFWGUGSH RTGSJS[ ROMVMVN ROMONVN","H\\XMWMW\\V_U`SaQaO`N_L_ RXMX\\W_UaSbPbNaL_ RWPUNSMPMNNLPKSKULXNZP[S[UZWX RWPSNPNNOMPLSLUMXNYPZSZWX","H\\LFL[M[ RLFMFM[ RMQPNRMUMWNXQX[ RMQPORNTNVOWQW[X[","NWRFQGQHRISITHTGSFRF RRGRHSHSGRG RRMR[S[ RRMSMS[","NWRFQGQHRISITHTGSFRF RRGRHSHSGRG RRMRbSb RRMSMSb","H[LFL[M[ RLFMFM[ RXMWMMW RXMMX RPTV[X[ RQSX[","NWRFR[S[ RRFSFS[","CbGMG[H[ RGMHMH[ RHQKNMMPMRNSQS[ RHQKOMNONQORQR[S[ RSQVNXM[M]N^Q^[ RSQVOXNZN\\O]Q][^[","H\\LML[M[ RLMMMM[ RMQPNRMUMWNXQX[ RMQPORNTNVOWQW[X[","I\\QMONMPLSLUMXOZQ[T[VZXXYUYSXPVNTMQM RQNOONPMSMUNXOYQZTZVYWXXUXSWPVOTNQN","H\\LMLbMb RLMMMMb RMPONQMTMVNXPYSYUXXVZT[Q[OZMX RMPQNTNVOWPXSXUWXVYTZQZMX","H\\WMWbXb RWMXMXb RWPUNSMPMNNLPKSKULXNZP[S[UZWX RWPSNPNNOMPLSLUMXNYPZSZWX","KYOMO[P[ ROMPMP[ RPSQPSNUMXM RPSQQSOUNXNXM","J[XPWNTMQMNNMPNRPSUUWV RVUWWWXVZ RWYTZQZNY ROZNXMX RXPWPVN RWOTNQNNO RONNPOR RNQPRUTWUXWXXWZT[Q[NZMX","MXRFR[S[ RRFSFS[ ROMVMVN ROMONVN","H\\LMLWMZO[R[TZWW RLMMMMWNYPZRZTYWW RWMW[X[ RWMXMX[","JZLMR[ RLMMMRY RXMWMRY RXMR[","F^IMN[ RIMJMNX RRMNX RRPN[ RRPV[ RRMVX R[MZMVX R[MV[","I[LMW[X[ RLMMMX[ RXMWML[ RXMM[L[","JZLMR[ RLMMMRY RXMWMRYNb RXMR[ObNb","I[VNL[ RXMNZ RLMXM RLMLNVN RNZXZX[ RL[X[","KYUBNRUb","NVRBRb","KYOBVROb","F^IUISJPLONOPPTSVTXTZS[Q RISJQLPNPPQTTVUXUZT[Q[O"]};
+const CAP_UNITS = 21;          // capital height in font units
+const LINE_UNITS = 34;         // baseline to baseline
+const MAX_TEXT_LINES = 3;
+const glyphCache = {};
+
+function glyph(font, ch) {
+  const key = font + ch;
+  if (glyphCache[key]) return glyphCache[key];
+  const code = ch.charCodeAt(0);
+  const s = FONTS[font][code >= 32 && code <= 126 ? code - 32 : 31];  // unknown -> '?'
+  const v = c => c.charCodeAt(0) - 82;
+  const strokes = [];
+  let cur = [];
+  for (let i = 2; i < s.length; i += 2) {
+    if (s[i] === ' ' && s[i + 1] === 'R') { if (cur.length) strokes.push(cur); cur = []; }
+    else cur.push([v(s[i]), v(s[i + 1])]);
+  }
+  if (cur.length) strokes.push(cur);
+  return glyphCache[key] = { left: v(s[0]), right: v(s[1]), strokes };
+}
+
+// Text -> list of {ch, dots}: German umlauts become the base letter plus two dots,
+// ß becomes "ss", other accents are dropped, anything else unknown becomes '?'
+const UMLAUTS = { 'ä': 'a', 'ö': 'o', 'ü': 'u', 'Ä': 'A', 'Ö': 'O', 'Ü': 'U' };
+function textChars(text) {
+  const out = [];
+  for (let ch of text.replace(/ß/g, 'ss')) {
+    if (UMLAUTS[ch]) { out.push({ ch: UMLAUTS[ch], dots: true }); continue; }
+    ch = ch.normalize('NFD').replace(/[\u0300-\u036f]/g, '')[0] || '?';
+    const c = ch.charCodeAt(0);
+    out.push({ ch: c >= 32 && c <= 126 ? ch : '?', dots: false });
+  }
+  return out;
+}
+
+function charWidth(font, c) { const g = glyph(font, c.ch); return g.right - g.left; }
+function runWidth(font, chars) { return chars.reduce((w, c) => w + charWidth(font, c), 0); }
+
+// Greedy word wrap; explicit line breaks are kept, over-long words are split
+function wrapText(font, text, maxUnits) {
+  const lines = [];
+  for (const para of text.split('\n')) {
+    let line = [];
+    for (const word of para.split(/ +/).filter(w => w).map(textChars)) {
+      const withSpace = line.length ? [...line, { ch: ' ', dots: false }, ...word] : word;
+      if (runWidth(font, withSpace) <= maxUnits) { line = withSpace; continue; }
+      if (line.length) lines.push(line);
+      line = [];
+      for (const c of word) {
+        if (line.length && runWidth(font, [...line, c]) > maxUnits) { lines.push(line); line = []; }
+        line.push(c);
+      }
+    }
+    lines.push(line);
+  }
+  while (lines.length && !lines[lines.length - 1].length) lines.pop();  // trailing empty lines
+  return lines;
+}
+
+// Lines -> polylines in font units (y down), each line centred or left-aligned
+function layoutText(font, lines, align) {
+  const widths = lines.map(l => runWidth(font, l));
+  const maxW = Math.max(...widths, 1);
+  const polys = [];
+  const lowTop = Math.min(...glyph(font, 'x').strokes.flat().map(p => p[1]));  // x-height top
+  lines.forEach((line, li) => {
+    let x = align === 'center' ? (maxW - widths[li]) / 2 : 0;
+    const y = li * LINE_UNITS;
+    for (const c of line) {
+      const g = glyph(font, c.ch);
+      for (const st of g.strokes) polys.push(st.map(([px, py]) => ({ x: x + px - g.left, y: y + py })));
+      if (c.dots) {
+        // Two short dashes above the letter (a plotter draws a dot as a tiny line)
+        const upper = c.ch === c.ch.toUpperCase();
+        const dy = upper ? -15 : lowTop - 3;
+        const cx = x + (g.right - g.left) / 2 + (font === 'script' ? (upper ? 3 : 1) : 0);
+        for (const dx of [-2.5, 2.5]) polys.push([{ x: cx + dx, y: y + dy }, { x: cx + dx + 0.7, y: y + dy }]);
+      }
+      x += g.right - g.left;
+    }
+  });
+  return polys;
+}
+
+function polyBounds(polys) {
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (const pl of polys) for (const p of pl) {
+    if (p.x < minX) minX = p.x; if (p.x > maxX) maxX = p.x;
+    if (p.y < minY) minY = p.y; if (p.y > maxY) maxY = p.y;
+  }
+  return [minX, maxX, minY, maxY];
+}
+
+// Lays the text out at a letter height (mm); null if it needs more than 3 lines or doesn't fit
+function fitText(font, text, align, sizeMm) {
+  const scale = sizeMm / CAP_UNITS;  // mm per font unit
+  const areaW = (BED.maxX - BED.minX) * 0.9, areaH = (BED.maxY - BED.minY) * 0.9;
+  const lines = wrapText(font, text, areaW / scale);
+  if (!lines.length || lines.length > MAX_TEXT_LINES) return null;
+  const polys = layoutText(font, lines, align);
+  if (!polys.length) return null;
+  const b = polyBounds(polys);
+  if ((b[1] - b[0]) * scale > areaW + 0.01 || (b[3] - b[2]) * scale > areaH + 0.01) return null;
+  return { polys, b, scale, lines: lines.length };
+}
+
+function renderText() {
+  const text = document.getElementById('txtInput').value.trim();
+  if (!text) return;
+  const font = document.getElementById('txtFont').value;
+  const align = document.getElementById('txtAlign').value;
+  let fit;
+  if (document.getElementById('txtAuto').checked) {
+    // Largest letter height that still fits in at most 3 lines (binary search)
+    let lo = 1, hi = BED.maxY - BED.minY;
+    if (!fitText(font, text, align, lo)) { status.innerText = "Text too long - shorten it"; return; }
+    while (hi - lo > 0.1) { const m = (lo + hi) / 2; if (fitText(font, text, align, m)) lo = m; else hi = m; }
+    fit = fitText(font, text, align, lo);
+    document.getElementById('txtSize').value = lo.toFixed(1);
+  } else {
+    const size = num('txtSize') || 10;
+    fit = fitText(font, text, align, size);
+    if (!fit) { status.innerText = `Text doesn't fit at ${size} mm in ${MAX_TEXT_LINES} lines - make it smaller or shorter`; return; }
+  }
+  buildQueue(fit.polys, ...fit.b, { scale: fit.scale, upright: true });
+  status.innerText = `Text, ${num('txtSize')} mm, ${fit.lines} line${fit.lines > 1 ? 's' : ''}: ` + status.innerText;
+}
+
+// Update the preview while typing (short pause first) and when an option changes
+let textTimer = null;
+document.getElementById('txtInput').addEventListener('input', () => { clearTimeout(textTimer); textTimer = setTimeout(renderText, 400); });
+['txtFont', 'txtAlign', 'txtSize', 'txtAuto'].forEach(id => document.getElementById(id).addEventListener('change', renderText));
 
 function startPlot() {
   runJob(motionQueue);

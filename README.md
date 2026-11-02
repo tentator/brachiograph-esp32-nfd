@@ -7,8 +7,8 @@ path planning) happens in your browser. The finished drawing is uploaded to the 
 simple `G0`/`G1` commands and the board plots it on its own, so the phone can sleep or
 disconnect meanwhile.
 
-Current version: **`brachio-codez-oled-14.py`** (REV 14.0) with its web page
-**`brachio-web-14.html`**
+Current version: **`brachio-codez-oled-15.py`** (REV 15.0) with its web page
+**`brachio-web-15.html`**
 
 ---
 
@@ -19,7 +19,7 @@ Current version: **`brachio-codez-oled-14.py`** (REV 14.0) with its web page
 3. [Running and connecting](#running-and-connecting)
 4. [The web interface](#the-web-interface)
 5. [Calibration](#calibration)
-6. [Image to plot conversion](#image-to-plot-conversion)
+6. [Image to plot conversion](#image-to-plot-conversion) and [Text](#text)
 7. [How it works](#how-it-works)
 8. [HTTP API](#http-api)
 9. [Tuning constants](#tuning-constants)
@@ -75,8 +75,8 @@ Three files are needed on the board:
 | On your computer | On the board |
 |---|---|
 | `ssd1306.py` | `ssd1306.py` |
-| `brachio-codez-oled-14.py` | `main.py` (runs automatically at boot) |
-| `brachio-web-14.html` | `index.html` (the web page) |
+| `brachio-codez-oled-15.py` | `main.py` (runs automatically at boot) |
+| `brachio-web-15.html` | `index.html` (the web page) |
 
 The web page is a separate file because the ESP32-C3 has little RAM: MicroPython compiles the
 whole script in memory before running it, and with the page embedded as a string (REV 11) the
@@ -88,8 +88,8 @@ With Thonny: open the file, *File → Save as… → MicroPython device*. Or wit
 
 ```sh
 mpremote cp ssd1306.py :ssd1306.py
-mpremote cp brachio-codez-oled-14.py :main.py
-mpremote cp brachio-web-14.html :index.html
+mpremote cp brachio-codez-oled-15.py :main.py
+mpremote cp brachio-web-15.html :index.html
 ```
 
 Two more files appear on the board by themselves:
@@ -139,11 +139,11 @@ Three lines of 9 characters (the built-in MicroPython font is a fixed 8x8 px, so
 
 | Display | Meaning |
 |---|---|
-| `REV 14.0` / `READY` / IP | Server running |
+| `REV 15.0` / `READY` / IP | Server running |
 | `UPLOADING` / `840 pts` | Receiving a drawing |
 | `PLOTTING` / `120/840` / `14%` | Plotting, line 120 of 840 (updated every 5 s) |
 | `PAUSED` / `120/840` | Plot paused |
-| `REV 14.0` / `DONE` (or `STOPPED`, `ERROR`) / `840/840` | Plot ended |
+| `REV 15.0` / `DONE` (or `STOPPED`, `ERROR`) / `840/840` | Plot ended |
 | `S:-45` / `E:90` / `PEN UP` | After a jog or angle command |
 | `NO SERVER` / `PRESS RST` | Port 80 still in use after a soft reboot; press RESET |
 
@@ -163,7 +163,9 @@ the motion), and only the progress is updated every 5 s.
    (−45°, 90°), refresh the OLED. The readout shows the position the ESP32 actually reports.
 3. **Direct Motion Test.** Draws a 30x30 mm square in the middle of the drawing area: the
    quickest check of calibration (it should be square, with straight sides).
-4. **File Plotter (SVG).** Load an SVG, check the preview, press *Plot Loaded SVG*.
+4. **File Plotter (SVG).** Load an SVG, check the preview, press *Plot Drawing*. The preview and
+   the *Plot Drawing* button are shared by sections 4–6: whatever was loaded or created last is
+   what gets plotted.
    - Supported: `path`, `rect`, `circle`, `ellipse`, `line`, `polyline`, `polygon`, and any
      `transform` (scale/rotate/translate, also on groups). Shapes inside `<defs>`, masks etc.
      are skipped.
@@ -179,13 +181,14 @@ the motion), and only the progress is updated every 5 s.
    - The status line shows the number of lines/points and a rough time estimate.
 5. **Image to Plot.** Converts a JPG/PNG into lines in the browser; see
    [below](#image-to-plot-conversion).
-6. **Live Calibration.** Calibration, speed, hysteresis correction, arm lengths and drawing
+6. **Text.** Writes your text in a single-stroke font; see [below](#text).
+7. **Live Calibration.** Calibration, speed, hysteresis correction, arm lengths and drawing
    area; saved to `config.json` on the board and loaded at every boot. See
    [Calibration](#calibration).
 
 ### Plotting
 
-Pressing *Plot Loaded SVG* (or *Draw Test Square*):
+Pressing *Plot Drawing* (or *Draw Test Square*):
 
 1. uploads the drawing to the board in chunks of about 3 KB (the status line shows
    *Uploading: n%*),
@@ -320,7 +323,7 @@ to the ESP32 except the final coordinates). It works like the original BrachioGr
 3. **Hatching:** dark areas are filled with parallel lines. Each extra layer adds another
    direction (45°, 135°, 0°, 90°) over progressively darker areas, so shadows get cross-hatched.
 4. The lines are fitted to the drawing area and simplified (points within 0.2 mm of a straight
-   line are dropped). The preview shows the result; press *Plot Loaded SVG* to draw it.
+   line are dropped). The preview shows the result; press *Plot Drawing* to draw it.
    Straight hatch lines need only their two end points; the board draws the line between them.
 
 | Setting | Effect |
@@ -341,6 +344,52 @@ section 4 gives the same plot.
 
 Tips: high-contrast images with simple backgrounds work best. Start with 1–2 layers and check
 the time estimate; a full-page cross-hatch can mean thousands of points.
+
+---
+
+## Text
+
+Section 6 writes up to 3 lines of text, laid out in the browser like the image conversion (the
+board only receives the finished lines, so it costs no RAM on the ESP32; the fonts add about
+13 KB to the web page file).
+
+Plotters need **single-stroke fonts**: normal computer fonts (TTF/OTF) describe letter
+outlines, so every letter would be drawn as a hollow double line. The page uses three of the
+classic **Hershey fonts**, made for plotters:
+
+| Font | Hershey name | Looks like |
+|---|---|---|
+| Script (handwriting) | Script Simplex (`scripts`) | Flowing cursive, letters join up |
+| Block | Roman Simplex (`futural`) | Clean thin sans serif, fastest to plot |
+| Block bold | Roman Duplex (`futuram`) | Two strokes per line, good for banners |
+
+How it works:
+
+- Type the text; the preview updates after a short pause. Line breaks you type are kept; long
+  lines wrap at word boundaries (very long words are split). At most **3 lines** and 120
+  characters.
+- **Largest that fits** (on by default): the page picks the biggest letter height at which the
+  text fits the drawing area (minus the usual 10 % margin) in at most 3 lines, and shows it in
+  the *Letter height* field. This may spread a short phrase over several lines to make it
+  bigger; for a one-line banner, untick it and enter a height.
+- **Letter height** is the height of capital letters in mm. With *Largest that fits* unticked,
+  the text is set at exactly that height; if it doesn't fit in 3 lines the status line says so.
+- **Align**: centre or left.
+- Text is always plotted upright (the rotate option of section 4 doesn't apply).
+- **Characters**: the printable ASCII set (letters, digits, punctuation). German umlauts
+  (ä ö ü Ä Ö Ü) are drawn as the base letter plus two dots, ß as "ss"; other accented letters
+  lose their accent (é → e); anything else becomes "?".
+- *Block bold* draws each line twice, about 1 font unit apart (≈ 0.05 × the letter height).
+  Up to about 10 mm letters the two strokes merge into a bold line; at larger sizes they show
+  as a hollow outline.
+
+Font acknowledgement (required by the Hershey fonts' terms of use, which allow use for any
+purpose): *The Hershey Fonts were originally created by Dr. A. V. Hershey while working at the
+U. S. National Bureau of Standards. The format of the font data in this distribution was
+originally created by James Hurt, Cognition, Inc., 900 Technology Park Drive, Billerica, MA
+01821.* The font data was taken from the
+[hershey-fonts](https://github.com/kamalmostafa/hershey-fonts) package (`.jhf` files) and
+converted into JavaScript strings in the web page.
 
 ---
 
@@ -464,7 +513,7 @@ The drawing area is no longer a constant in the page: it comes from the board's 
 |---|---|
 | Thonny's shell shows nothing | The program was started at boot before Thonny connected. Run it with F5 from Thonny instead. |
 | No Wi-Fi network at all, OLED blank or unchanged after boot | The script didn't start. Run it with F5 in Thonny to see the error. `MemoryError` means the script is too big for the RAM (as REV 11 was); otherwise check that `ssd1306.py` is on the board. |
-| Page shows "index.html is missing on the board" | Upload `brachio-web-14.html` to the board as `index.html`. |
+| Page shows "index.html is missing on the board" | Upload `brachio-web-15.html` to the board as `index.html`. |
 | Page looks outdated or buttons don't work after an update | Script and page are from different revisions; upload both from the same revision and reload the page. |
 | Wi-Fi connects but the page doesn't load | Most often Thonny stopped the program (OLED dot not blinking): reset the board with Thonny disconnected. Otherwise use `http://` explicitly and turn off mobile data. |
 | Page loads sometimes, connection unstable | These small C3 boards have weak antennas; try `ap.config(txpower=8.5)` after `ap.active(True)`. |
@@ -487,8 +536,8 @@ The drawing area is no longer a constant in the page: it comes from the board's 
 
 | File | Description |
 |---|---|
-| `brachio-codez-oled-14.py` | **Current version** (upload as `main.py`) |
-| `brachio-web-14.html` | Its web page (upload as `index.html`) |
+| `brachio-codez-oled-15.py` | **Current version** (upload as `main.py`) |
+| `brachio-web-15.html` | Its web page (upload as `index.html`) |
 | `ssd1306.py` | OLED driver (MicroPython standard driver) |
 | `ESP32_GENERIC_C3-20260824-v1.29.0.bin` | MicroPython firmware for the ESP32-C3 |
 | `square-svg.svg` | 40x40 test square for the SVG plotter |
@@ -511,3 +560,4 @@ Revisions (each in its own file, older ones kept for fallback):
 | 12 | Same features as 11; web page moved to a separate file (`index.html`) streamed from flash, so the script compiles and runs in the C3's RAM again (needs less memory than REV 10); revision badge read from the board |
 | 13 | Image to Plot: preview updates on every setting change; loaded image kept in the page's own canvas (mobile browsers could discard it, so re-convert did nothing); Darkness accepts a decimal comma; errors shown instead of failing silently; "nothing to draw" clears the preview |
 | 14 | Option to rotate drawings 90° when that makes them bigger (portrait images on the landscape area); status line shows the final size in mm |
+| 15 | Text section: up to 3 lines in Script, Block or Block bold Hershey single-stroke fonts, word wrap, largest-that-fits or fixed letter height, German umlauts; plot button renamed *Plot Drawing* |

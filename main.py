@@ -8,7 +8,7 @@ import os
 from machine import Pin, PWM, I2C, SoftI2C
 import ssd1306
 
-REVISION = "REV 14.0"
+REVISION = "REV 15.0"
 
 # --- 1. Self-healing OLED Driver (72x40) ---
 # The built-in framebuf font is fixed at 8x8 px, so 72x40 fits 9 chars x 5 rows.
@@ -340,7 +340,7 @@ AP_IP = ap.ifconfig()[0]
 print("AP 'ESP32-Plotter' up, IP:", AP_IP)
 
 # --- 5. Web UI ---
-# The page is a separate file on flash (upload brachio-web-14.html as index.html).
+# The page is a separate file on flash (upload brachio-web-15.html as index.html).
 # Embedding it as a string made the script too big to compile in the C3's RAM.
 WEB_FILE = "index.html"
 web_buf = bytearray(1024)  # reused for every page request
@@ -473,9 +473,9 @@ async def handle_client(reader, writer):
             try:
                 f = open(WEB_FILE, "rb")
             except OSError:
-                print("Web page missing: upload brachio-web-14.html to the board as", WEB_FILE)
+                print("Web page missing: upload brachio-web-15.html to the board as", WEB_FILE)
                 writer.write(b"HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\n"
-                             b"index.html is missing on the board: upload brachio-web-14.html as index.html")
+                             b"index.html is missing on the board: upload brachio-web-15.html as index.html")
             else:
                 # Stream from flash in 1 KB pieces so the page never sits in RAM
                 writer.write(headers.encode('utf-8'))
