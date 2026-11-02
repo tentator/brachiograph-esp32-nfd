@@ -1,0 +1,677 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>BrachioGraph Plotter</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 12px; background: #eef1f5; }
+    .card { background: white; padding: 16px; border-radius: 8px; max-width: 460px; margin: auto; box-shadow: 0 2px 8px rgba(0,0,0,0.08); margin-bottom: 12px; }
+    h3, h4 { margin: 4px 0 8px 0; }
+    .badge { background: #0066cc; color: white; padding: 2px 7px; border-radius: 4px; font-size: 12px; }
+    button { background: #0066cc; color: white; border: none; padding: 8px 12px; border-radius: 4px; cursor: pointer; font-size: 14px; margin: 3px 1px; }
+    button:disabled { background: #aaa; }
+    button.alt { background: #4a5568; }
+    button.warn { background: #d97706; }
+    button.test { background: #7c3aed; }
+    button.success { background: #059669; }
+    button.danger { background: #dc2626; }
+    .btn-row { display: flex; flex-wrap: wrap; gap: 4px; margin: 6px 0; }
+    canvas { border: 1px solid #ccc; display: block; margin: 10px auto; background: #fafafa; border-radius: 4px; }
+    input[type=number] { width: 68px; padding: 4px; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; font-size: 13px; margin-bottom: 8px; }
+    #status { font-weight: bold; text-align: center; margin: 8px 0; color: #0066cc; }
+    .readout { background: #f8fafc; border: 1px solid #e2e8f0; padding: 6px; border-radius: 4px; font-family: monospace; font-size: 13px; text-align: center; margin-bottom: 8px; }
+  </style>
+</head>
+<body>
+
+<div class="card">
+  <h3>BrachioGraph <span class="badge" id="rev">...</span></h3>
+  <div id="status">Status: Ready</div>
+  <div class="readout" id="posReadout">S: -45° | E: 90° | Pen: UP</div>
+  <div id="jobPanel" style="display:none;">
+    <progress id="jobProgress" max="100" value="0" style="width:100%;"></progress>
+    <div class="btn-row">
+      <button class="warn" id="pauseBtn" onclick="pauseResume()">Pause</button>
+      <button class="danger" onclick="stopJob()">Stop</button>
+    </div>
+    <div id="awakeNote" style="font-size:12px; color:#555;"></div>
+  </div>
+
+  <h4>1. Motor Pin Diagnostic Tests</h4>
+  <div class="btn-row">
+    <button class="test" onclick="sendCmd('TEST_SHOULDER')">Test Shoulder Sweep</button>
+    <button class="test" onclick="sendCmd('TEST_ELBOW')">Test Elbow Sweep</button>
+    <button class="test" onclick="sendCmd('TEST_PEN')">Test Pen</button>
+  </div>
+
+  <h4>2. Safe Nudge Controls (±5°)</h4>
+  <div class="btn-row">
+    <button onclick="jog('S', -5)">S: -5°</button>
+    <button onclick="jog('S', 5)">S: +5°</button>
+    <button onclick="jog('E', -5)">E: -5°</button>
+    <button onclick="jog('E', 5)">E: +5°</button>
+    <button class="alt" onclick="togglePen()">Toggle Pen</button>
+  </div>
+  <div class="btn-row">
+    <button class="warn" onclick="centerBed()">Bed Center (-45°, 90°)</button>
+    <button class="alt" onclick="sendCmd('TEST_OLED')">Refresh OLED</button>
+  </div>
+
+  <h4>3. Direct Motion Test</h4>
+  <button class="success" style="width:100%; padding:10px;" onclick="drawTestSquare()">
+    Draw Test Square (30x30mm, area centre)
+  </button>
+</div>
+
+<div class="card">
+  <h4>4. File Plotter (SVG)</h4>
+  <input type="file" id="fileInput" accept=".svg"><br>
+  <canvas id="preview" width="360" height="250"></canvas>
+  <div id="svgHolder" style="position:absolute; width:0; height:0; overflow:hidden; visibility:hidden;"></div>
+  <button id="plotBtn" style="width:100%;" disabled onclick="startPlot()">Plot Loaded SVG</button>
+</div>
+
+<div class="card">
+  <h4>5. Image to Plot (JPG/PNG, converted in the browser)</h4>
+  <input type="file" id="imgInput" accept="image/*"><br>
+  <div class="grid" style="margin-top:8px;">
+    <div>Detail (px): <input type="number" id="imgRes" value="160" min="60" max="400" step="20"></div>
+    <div>Hatch spacing: <input type="number" id="imgSpacing" value="4" min="2" max="12" step="1"></div>
+    <div>Hatch layers: <input type="number" id="imgLayers" value="2" min="0" max="4" step="1"></div>
+    <div>Darkness: <input type="number" id="imgDark" value="1.0" min="0.3" max="2" step="0.1"></div>
+    <div><label><input type="checkbox" id="imgOutline" checked> Outlines</label></div>
+    <div><label><input type="checkbox" id="imgInvert"> Invert</label></div>
+  </div>
+  <div class="btn-row">
+    <button class="alt" onclick="convertImage()">Re-convert</button>
+    <button class="alt" id="svgDownload" disabled onclick="downloadSvg()">Download SVG</button>
+  </div>
+  <div style="font-size:12px; color:#555;">Result appears in the preview above; use "Plot Loaded SVG" to draw it.</div>
+</div>
+
+<div class="card">
+  <h4>6. Live Calibration</h4>
+  <div class="grid">
+    <div>S1 Park: <input class="cfg" type="number" id="s1_ang" value="-90.0" step="1"></div>
+    <div>S2 Park: <input class="cfg" type="number" id="s2_ang" value="90.0" step="1"></div>
+    <div>S1 Slope: <input class="cfg" type="number" id="s1_slope" value="-10.0" step="0.5"></div>
+    <div>S2 Slope: <input class="cfg" type="number" id="s2_slope" value="10.0" step="0.5"></div>
+    <div>Pen Up (us): <input class="cfg" type="number" id="pen_up" value="1450" step="10"></div>
+    <div>Pen Down (us): <input class="cfg" type="number" id="pen_down" value="1850" step="10"></div>
+  </div>
+  <h4>Motion</h4>
+  <div class="grid">
+    <div>Speed (mm/s): <input class="cfg" type="number" id="speed" value="25" min="2" max="100" step="1"></div>
+    <div></div>
+    <div>S1 Hysteresis (us): <input class="cfg" type="number" id="s1_hyst" value="0" step="1"></div>
+    <div>S2 Hysteresis (us): <input class="cfg" type="number" id="s2_hyst" value="0" step="1"></div>
+  </div>
+  <h4>Arms and Drawing Area (mm)</h4>
+  <div class="grid">
+    <div>Inner arm L1: <input class="cfg" type="number" id="L1" value="80" step="1"></div>
+    <div>Outer arm L2: <input class="cfg" type="number" id="L2" value="80" step="1"></div>
+    <div>Area X min: <input class="cfg" type="number" id="bed_minx" value="-50" step="1"></div>
+    <div>Area X max: <input class="cfg" type="number" id="bed_maxx" value="50" step="1"></div>
+    <div>Area Y min: <input class="cfg" type="number" id="bed_miny" value="80" step="1"></div>
+    <div>Area Y max: <input class="cfg" type="number" id="bed_maxy" value="150" step="1"></div>
+  </div>
+  <div class="btn-row">
+    <button class="alt" onclick="autoFitBed()">Auto-fit Area to Arms</button>
+  </div>
+  <div style="font-size:12px; color:#555; margin-bottom:6px;">Auto-fit finds the largest A-paper-shaped area the arms can reach within the servo limits, using the calibration above. Check it, then Apply.</div>
+  <button class="alt" style="width:100%;" onclick="applyConfig()">Apply Config</button>
+</div>
+
+<script>
+let currentS = -45, currentE = 90, penDown = false;
+let motionQueue = [];
+const status = document.getElementById('status');
+const readout = document.getElementById('posReadout');
+const canvas = document.getElementById('preview');
+const ctx = canvas.getContext('2d');
+let BED = { minX: -50, maxX: 50, minY: 80, maxY: 150 };
+let boardCfg = {};       // last config read from the board
+let lastDrawing = null;  // arguments of the last buildQueue(), to re-fit after area changes
+
+function updateReadout() {
+  readout.innerText = `S: ${currentS}° | E: ${currentE}° | Pen: ${penDown ? "DOWN" : "UP"}`;
+}
+
+function toCanvasX(x) { return ((x - BED.minX) / (BED.maxX - BED.minX)) * canvas.width; }
+function toCanvasY(y) { return canvas.height - (((y - BED.minY) / (BED.maxY - BED.minY)) * canvas.height); }
+
+function resetCanvas() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.strokeStyle = '#ddd';
+  ctx.strokeRect(0, 0, canvas.width, canvas.height);
+}
+resetCanvas();
+
+// Fill the calibration fields (inputs with class "cfg", id = config key) and the
+// drawing area with what is saved on the board
+async function loadConfig() {
+  try {
+    boardCfg = await (await fetch('/config')).json();
+  } catch (err) { return; }
+  document.querySelectorAll('.cfg').forEach(el => { if (el.id in boardCfg) el.value = boardCfg[el.id]; });
+  BED = { minX: boardCfg.bed_minx, maxX: boardCfg.bed_maxx, minY: boardCfg.bed_miny, maxY: boardCfg.bed_maxy };
+  // Keep the preview in the same proportions as the drawing area
+  canvas.height = Math.max(100, Math.min(500, Math.round(canvas.width * (BED.maxY - BED.minY) / (BED.maxX - BED.minX))));
+  resetCanvas();
+  if (lastDrawing) buildQueue(...lastDrawing);
+}
+loadConfig();
+
+// Sends one command; syncs the readout with the position the ESP32 reports back.
+async function postCmd(body) {
+  const res = await fetch('/cmd', { method: 'POST', body: body });
+  const txt = await res.text();
+  if (!res.ok) throw new Error(txt);
+  const m = txt.match(/S=(-?[\d.]+) E=(-?[\d.]+) P=(\d)/);
+  if (m) {
+    currentS = Math.round(parseFloat(m[1])); currentE = Math.round(parseFloat(m[2]));
+    penDown = m[3] === '1';
+    updateReadout();
+  }
+  return txt;
+}
+
+async function sendCmd(text) {
+  status.innerText = "Sent: " + text;
+  try {
+    return await postCmd(text);
+  } catch (err) {
+    status.innerText = "Error: " + err.message;
+  }
+}
+
+async function centerBed() {
+  currentS = -45; currentE = 90;
+  updateReadout();
+  await sendCmd('ANG S=-45 E=90 P=0');
+}
+
+async function jog(axis, delta) {
+  if (axis === 'S') currentS += delta;
+  if (axis === 'E') currentE += delta;
+  updateReadout();
+  await sendCmd(`ANG S=${currentS} E=${currentE} P=${penDown ? 1 : 0}`);
+}
+
+async function togglePen() {
+  penDown = !penDown;
+  updateReadout();
+  await sendCmd(`ANG S=${currentS} E=${currentE} P=${penDown ? 1 : 0}`);
+}
+
+async function applyConfig() {
+  const parts = [];
+  document.querySelectorAll('.cfg').forEach(el => parts.push(`${el.id}=${el.value}`));
+  const res = await sendCmd('CFG ' + parts.join(' '));
+  if (res === undefined) return;  // error already shown in the status line
+  await loadConfig();
+  alert("Configuration applied and saved to the board");
+}
+
+// ---------- Plot jobs ----------
+// The drawing is uploaded to the board in chunks and then plotted by the board
+// on its own; the page only polls /status to show progress.
+const CHUNK_CHARS = 3000;
+let jobActive = false, polling = false;
+
+async function runJob(queue) {
+  document.getElementById('plotBtn').disabled = true;
+  try {
+    const bytes = queue.reduce((n, l) => n + l.length + 1, 0);
+    await postCmd(`JOB_BEGIN ${queue.length} ${bytes}`);
+    let chunk = '';
+    for (let i = 0; i < queue.length; i++) {
+      chunk += queue[i] + '\n';
+      if (chunk.length >= CHUNK_CHARS || i === queue.length - 1) {
+        const res = await fetch('/job', { method: 'POST', body: chunk });
+        if (!res.ok) throw new Error(await res.text());
+        chunk = '';
+        status.innerText = `Uploading: ${Math.round((i + 1) * 100 / queue.length)}%`;
+      }
+    }
+    await postCmd('JOB_START');
+    pollStatus();
+  } catch (err) {
+    status.innerText = "Upload failed: " + err.message;
+    try { await postCmd('JOB_STOP'); } catch (e) {}
+    document.getElementById('plotBtn').disabled = motionQueue.length === 0;
+  }
+}
+
+async function getStatus() {
+  try { return await (await fetch('/status')).json(); } catch (err) { return null; }
+}
+
+function showStatus(st) {
+  currentS = Math.round(st.s); currentE = Math.round(st.e); penDown = st.p === 1;
+  updateReadout();
+  const active = st.job === 'running' || st.job === 'paused';
+  const pct = st.total ? Math.floor(st.line * 100 / st.total) : 0;
+  document.getElementById('jobPanel').style.display = active ? 'block' : 'none';
+  document.getElementById('jobProgress').value = pct;
+  document.getElementById('pauseBtn').innerText = st.job === 'paused' ? 'Resume' : 'Pause';
+  if (active) {
+    status.innerText = `${st.job === 'paused' ? 'Paused' : 'Plotting'}: ${st.line} / ${st.total} (${pct}%)`;
+  } else if (jobActive) {
+    status.innerText = st.job === 'done' ? "Plot finished!" : `Plot ${st.job} at ${st.line} / ${st.total}`;
+    document.getElementById('plotBtn').disabled = motionQueue.length === 0;
+  }
+  jobActive = active;
+  keepAwake(active);
+}
+
+// Polls once a second while a job is active. If the board can't be reached
+// (phone slept, Wi-Fi dropped) it keeps trying: the plot continues on the board.
+async function pollStatus() {
+  if (polling) return;
+  polling = true;
+  jobActive = true;
+  while (true) {
+    const st = await getStatus();
+    if (st) showStatus(st);
+    else status.innerText = "Board not reachable - the plot continues on the board";
+    if (st && !jobActive) break;
+    await new Promise(r => setTimeout(r, 1000));
+  }
+  polling = false;
+}
+
+async function pauseResume() {
+  const paused = document.getElementById('pauseBtn').innerText === 'Resume';
+  await sendCmd(paused ? 'JOB_RESUME' : 'JOB_PAUSE');
+}
+
+async function stopJob() {
+  if (confirm("Stop the plot? It can't be resumed.")) await sendCmd('JOB_STOP');
+}
+
+// Reopening the page while a plot runs (e.g. after the phone slept) picks it up again.
+// The page is a static file, so the revision badge comes from the board.
+getStatus().then(st => {
+  if (!st) return;
+  document.getElementById('rev').innerText = st.rev;
+  document.title = 'Plotter ' + st.rev;
+  if (st.job === 'running' || st.job === 'paused') pollStatus();
+});
+
+// ---------- Keep the screen on while plotting ----------
+// Screen Wake Lock only works on secure pages (https), so on plain http it's
+// unavailable unless Chrome is told to treat this address as secure.
+let wakeLock = null;
+
+async function keepAwake(on) {
+  const note = document.getElementById('awakeNote');
+  if (!('wakeLock' in navigator)) {
+    note.innerText = "Screen may turn off (no wake lock on http) - the plot continues on the board.";
+    return;
+  }
+  try {
+    if (on && !wakeLock) {
+      wakeLock = await navigator.wakeLock.request('screen');
+      wakeLock.addEventListener('release', () => { wakeLock = null; });
+    } else if (!on && wakeLock) {
+      await wakeLock.release();
+      wakeLock = null;
+    }
+    note.innerText = on ? "Screen kept on while plotting." : "";
+  } catch (err) {
+    note.innerText = "Screen may turn off - the plot continues on the board.";
+  }
+}
+
+// The browser drops the wake lock when the tab is hidden; take it again on return
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && jobActive) keepAwake(true);
+});
+
+// ---------- Auto-fit the drawing area to the arms ----------
+// Finds the largest landscape rectangle with A-paper proportions (1:1.414) where
+// every point is reachable with the elbow between 25 and 150 degrees and both arm
+// servos stay inside their pulse limits with the current calibration.
+function cfgField(id) { return parseFloat(document.getElementById(id).value); }
+
+function jointAngles(x, y, L1, L2) {
+  const h = Math.hypot(x, y);
+  if (h < 1 || h > L1 + L2 || h < Math.abs(L1 - L2)) return null;
+  const inner = Math.acos(Math.max(-1, Math.min(1, (h*h + L1*L1 - L2*L2) / (2*h*L1))));
+  const outer = Math.acos(Math.max(-1, Math.min(1, (L1*L1 + L2*L2 - h*h) / (2*L1*L2))));
+  return [(Math.asin(x / h) - inner) * 180 / Math.PI, 180 - outer * 180 / Math.PI];
+}
+
+function areaReachable(x0, y0, w, h, c) {
+  const N = 20;
+  for (let i = 0; i <= N; i++) for (let j = 0; j <= N; j++) {
+    if (i > 0 && i < N && j > 0 && j < N) continue;  // perimeter is enough
+    const a = jointAngles(x0 + w * i / N, y0 + h * j / N, c.L1, c.L2);
+    if (!a || a[1] < 25 || a[1] > 150) return false;
+    const pw1 = c.s1_pw + (a[0] - c.s1_ang) * c.s1_slope;
+    const pw2 = c.s2_pw + (a[1] - c.s2_ang) * c.s2_slope;
+    if (pw1 < 800 || pw1 > 2200 || pw2 < 800 || pw2 > 2200) return false;
+  }
+  return true;
+}
+
+function autoFitBed() {
+  const c = { L1: cfgField('L1'), L2: cfgField('L2'),
+              s1_pw: boardCfg.s1_pw || 1500, s2_pw: boardCfg.s2_pw || 1500,
+              s1_ang: cfgField('s1_ang'), s2_ang: cfgField('s2_ang'),
+              s1_slope: cfgField('s1_slope'), s2_slope: cfgField('s2_slope') };
+  const reach = c.L1 + c.L2;
+  let best = null;
+  for (let y0 = 5; y0 < reach; y0 += 4) {
+    for (let xc = -reach / 2; xc <= reach / 2; xc += 4) {
+      let lo = best ? best.w : 0, hi = 2 * reach;
+      if (!areaReachable(xc - lo / 2, y0, lo, lo / Math.SQRT2, c)) continue;
+      while (hi - lo > 1) {
+        const w = (lo + hi) / 2;
+        if (areaReachable(xc - w / 2, y0, w, w / Math.SQRT2, c)) lo = w; else hi = w;
+      }
+      if (!best || lo > best.w) best = { w: lo, xc: xc, y0: y0 };
+    }
+  }
+  if (!best || best.w < 10) { status.innerText = "No usable area found - check arm lengths and calibration"; return; }
+  const h = best.w / Math.SQRT2;
+  document.getElementById('bed_minx').value = Math.round(best.xc - best.w / 2);
+  document.getElementById('bed_maxx').value = Math.round(best.xc + best.w / 2) - 1;
+  document.getElementById('bed_miny').value = Math.round(best.y0);
+  document.getElementById('bed_maxy').value = Math.round(best.y0 + h) - 1;
+  status.innerText = `Auto-fit: ${Math.round(best.w)} x ${Math.round(h)} mm - press Apply Config to use it`;
+}
+
+function drawTestSquare() {
+  // Corners only: the ESP32 draws straight lines between them itself
+  const cx = Math.round((BED.minX + BED.maxX) / 2), cy = Math.round((BED.minY + BED.maxY) / 2);
+  const minX = cx - 15, maxX = cx + 15, minY = cy - 15, maxY = cy + 15;
+  const pts = [[minX, minY], [maxX, minY], [maxX, maxY], [minX, maxY], [minX, minY]];
+
+  resetCanvas();
+  ctx.beginPath();
+  ctx.strokeStyle = '#059669';
+  ctx.moveTo(toCanvasX(pts[0][0]), toCanvasY(pts[0][1]));
+
+  const queue = [];
+  queue.push(`G0 X${pts[0][0]} Y${pts[0][1]}`);
+  pts.forEach(p => {
+    queue.push(`G1 X${p[0]} Y${p[1]}`);
+    ctx.lineTo(toCanvasX(p[0]), toCanvasY(p[1]));
+  });
+  ctx.stroke();
+
+  runJob(queue);
+}
+
+// Every SVG shape the browser can measure (all are SVGGeometryElements)
+const SHAPES = 'path,rect,circle,ellipse,line,polyline,polygon';
+const SIMPLIFY_MM = 0.2;   // max deviation when dropping points after scaling to the bed
+
+document.getElementById('fileInput').addEventListener('change', async (e) => {
+  if (!e.target.files.length) return;
+  const doc = new DOMParser().parseFromString(await e.target.files[0].text(), "image/svg+xml");
+  if (doc.querySelector('parsererror')) { status.innerText = "Error: not a valid SVG"; return; }
+
+  // Attach the SVG (invisibly) so the browser resolves transforms and shape geometry
+  const holder = document.getElementById('svgHolder');
+  holder.innerHTML = '';
+  const svg = holder.appendChild(document.importNode(doc.documentElement, true));
+
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  const sampled = [];
+  const bb = svg.getBBox();
+  const step = Math.max(Math.hypot(bb.width, bb.height) / 500, 1e-3);  // fine, size-independent
+
+  svg.querySelectorAll(SHAPES).forEach(el => {
+    if (el.closest('defs,clipPath,mask,symbol,marker,pattern')) return;  // not drawn directly
+    const len = el.getTotalLength();
+    if (!len) return;
+    const m = el.getCTM();  // includes transform/scale/rotate of the element and its groups
+    const n = Math.ceil(len / step);
+    const pts = [];
+    for (let i = 0; i <= n; i++) {
+      let pt = el.getPointAtLength(len * i / n);
+      if (m) pt = pt.matrixTransform(m);
+      pts.push({ x: pt.x, y: pt.y });
+      if (pt.x < minX) minX = pt.x; if (pt.x > maxX) maxX = pt.x;
+      if (pt.y < minY) minY = pt.y; if (pt.y > maxY) maxY = pt.y;
+    }
+    sampled.push(pts);
+  });
+  holder.innerHTML = '';
+
+  if (!sampled.length) { status.innerText = "No drawable shapes found in SVG"; return; }
+  buildQueue(sampled, minX, maxX, minY, maxY);
+});
+
+// Ramer-Douglas-Peucker: drops points that deviate less than eps from the line
+// through their neighbours, so straight runs collapse to their two endpoints.
+function simplify(pts, eps) {
+  if (pts.length < 3) return pts;
+  const keep = new Uint8Array(pts.length);
+  keep[0] = keep[pts.length - 1] = 1;
+  const stack = [[0, pts.length - 1]];
+  while (stack.length) {
+    const [a, b] = stack.pop();
+    const [ax, ay] = pts[a], [bx, by] = pts[b];
+    const len = Math.hypot(bx - ax, by - ay);
+    let maxD = 0, idx = -1;
+    for (let i = a + 1; i < b; i++) {
+      const [px, py] = pts[i];
+      const d = len ? Math.abs((bx - ax) * (ay - py) - (ax - px) * (by - ay)) / len : Math.hypot(px - ax, py - ay);
+      if (d > maxD) { maxD = d; idx = i; }
+    }
+    if (maxD > eps) { keep[idx] = 1; stack.push([a, idx], [idx, b]); }
+  }
+  return pts.filter((_, i) => keep[i]);
+}
+
+// Fits polylines (any units, y pointing down as in SVG/images) onto the bed,
+// fills motionQueue and draws the preview.
+function buildQueue(sampled, minX, maxX, minY, maxY) {
+  lastDrawing = [sampled, minX, maxX, minY, maxY];
+  const scale = Math.min((BED.maxX - BED.minX) * 0.9 / (maxX - minX || 1), (BED.maxY - BED.minY) * 0.9 / (maxY - minY || 1));
+  const cX = (minX + maxX)/2, cY = (minY + maxY)/2;
+  const bcX = (BED.minX + BED.maxX)/2, bcY = (BED.minY + BED.maxY)/2;
+
+  motionQueue = [];
+  resetCanvas();
+  ctx.beginPath();
+  ctx.strokeStyle = '#0066cc';
+  let lengthMm = 0;
+
+  sampled.forEach(pts => {
+    const mm = simplify(pts.map(p => [bcX + (p.x - cX) * scale, bcY - (p.y - cY) * scale]), SIMPLIFY_MM);
+    let [lx, ly] = mm[0];
+    motionQueue.push(`G0 X${lx.toFixed(2)} Y${ly.toFixed(2)}`);
+    ctx.moveTo(toCanvasX(lx), toCanvasY(ly));
+    mm.forEach(([px, py]) => {
+      lengthMm += Math.hypot(px - lx, py - ly);
+      motionQueue.push(`G1 X${px.toFixed(2)} Y${py.toFixed(2)}`);
+      ctx.lineTo(toCanvasX(px), toCanvasY(py));
+      lx = px; ly = py;
+    });
+  });
+  ctx.stroke();
+  document.getElementById('plotBtn').disabled = false;
+  // Rough estimate: drawing at the set speed plus ~0.5 s per pen lift and travel
+  const minutes = Math.ceil((lengthMm / (boardCfg.speed || 25) + sampled.length * 0.5) / 60);
+  status.innerText = `Ready: ${sampled.length} lines, ${motionQueue.length} points, ~${minutes} min`;
+}
+
+// ---------- Image -> line drawing (runs entirely in the browser) ----------
+// Outlines: marching squares on a blurred copy. Shading: hatch lines over dark
+// areas, one more direction per darker layer (like the original BrachioGraph).
+let imgElement = null, lastLines = null, lastSize = null;
+
+document.getElementById('imgInput').addEventListener('change', (e) => {
+  if (!e.target.files.length) return;
+  const img = new Image();
+  img.onload = () => { imgElement = img; convertImage(); URL.revokeObjectURL(img.src); };
+  img.onerror = () => { status.innerText = "Error: could not read image"; };
+  img.src = URL.createObjectURL(e.target.files[0]);
+});
+
+function num(id) { return parseFloat(document.getElementById(id).value); }
+
+function grayscale(img, W, H, invert) {
+  const c = document.createElement('canvas');
+  c.width = W; c.height = H;
+  const cx = c.getContext('2d');
+  cx.fillStyle = '#fff';  // transparent PNG areas count as white paper
+  cx.fillRect(0, 0, W, H);
+  cx.drawImage(img, 0, 0, W, H);
+  const d = cx.getImageData(0, 0, W, H).data;
+  const g = new Float32Array(W * H);
+  let lo = 255, hi = 0;
+  for (let i = 0; i < W * H; i++) {
+    let v = 0.299 * d[i*4] + 0.587 * d[i*4+1] + 0.114 * d[i*4+2];
+    if (invert) v = 255 - v;
+    g[i] = v;
+    if (v < lo) lo = v; if (v > hi) hi = v;
+  }
+  const k = 255 / ((hi - lo) || 1);  // stretch contrast to the full range
+  for (let i = 0; i < g.length; i++) g[i] = (g[i] - lo) * k;
+  return g;
+}
+
+function blur(g, W, H) {
+  const out = new Float32Array(W * H);
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    let sum = 0, n = 0;
+    for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+      const xx = x + dx, yy = y + dy;
+      if (xx >= 0 && yy >= 0 && xx < W && yy < H) { sum += g[yy * W + xx]; n++; }
+    }
+    out[y * W + x] = sum / n;
+  }
+  return out;
+}
+
+// Marching squares edge pairs per case (tl=8, tr=4, br=2, bl=1); edges 0=top 1=right 2=bottom 3=left
+const MS_CASES = [[], [[3,2]], [[2,1]], [[3,1]], [[0,1]], [[0,1],[3,2]], [[0,2]], [[3,0]],
+                  [[3,0]], [[0,2]], [[3,0],[2,1]], [[0,1]], [[3,1]], [[2,1]], [[3,2]], []];
+
+function contours(g, W, H, thr, minPts) {
+  const pts = new Map(), adj = new Map();
+  const dark = (x, y) => g[y * W + x] < thr;
+  // Each crossing point is identified by its grid edge: horizontal = even id, vertical = odd id
+  function edgePoint(x, y, edge) {
+    let id, ax, ay, bx, by;
+    if (edge === 0) { ax = x; ay = y; bx = x + 1; by = y; }
+    else if (edge === 2) { ax = x; ay = y + 1; bx = x + 1; by = y + 1; }
+    else if (edge === 3) { ax = x; ay = y; bx = x; by = y + 1; }
+    else { ax = x + 1; ay = y; bx = x + 1; by = y + 1; }
+    id = (ay * W + ax) * 2 + (ay === by ? 0 : 1);
+    if (!pts.has(id)) {
+      const va = g[ay * W + ax], vb = g[by * W + bx];
+      const t = va === vb ? 0.5 : Math.min(1, Math.max(0, (thr - va) / (vb - va)));
+      pts.set(id, { x: ax + (bx - ax) * t, y: ay + (by - ay) * t });
+    }
+    return id;
+  }
+  function link(a, b) {
+    if (!adj.has(a)) adj.set(a, []);
+    if (!adj.has(b)) adj.set(b, []);
+    adj.get(a).push(b); adj.get(b).push(a);
+  }
+  for (let y = 0; y < H - 1; y++) for (let x = 0; x < W - 1; x++) {
+    const c = (dark(x, y) ? 8 : 0) | (dark(x + 1, y) ? 4 : 0) | (dark(x + 1, y + 1) ? 2 : 0) | (dark(x, y + 1) ? 1 : 0);
+    for (const [e1, e2] of MS_CASES[c]) link(edgePoint(x, y, e1), edgePoint(x, y, e2));
+  }
+  // Every point has at most 2 neighbours, so the segments join into simple chains
+  const seen = new Set(), lines = [];
+  function walk(start) {
+    const line = [];
+    let prev = -1, cur = start;
+    while (cur !== undefined && !seen.has(cur)) {
+      seen.add(cur);
+      line.push(pts.get(cur));
+      const next = adj.get(cur).find(n => n !== prev && !seen.has(n));
+      prev = cur; cur = next;
+    }
+    // Close loops back to their start point
+    if (line.length > 2 && adj.get(start).includes(prev)) line.push(pts.get(start));
+    return line;
+  }
+  for (const [id, nb] of adj) if (nb.length === 1 && !seen.has(id)) lines.push(walk(id));  // open chains
+  for (const id of adj.keys()) if (!seen.has(id)) lines.push(walk(id));                    // closed loops
+  return lines.filter(l => l.length >= minPts);
+}
+
+function hatch(g, W, H, thr, angleDeg, spacing) {
+  const a = angleDeg * Math.PI / 180;
+  const dx = Math.cos(a), dy = Math.sin(a);   // along the line
+  const nx = -dy, ny = dx;                    // across the lines
+  const cx = W / 2, cy = H / 2, R = Math.hypot(W, H) / 2;
+  const lines = [];
+  let flip = false;
+  for (let o = -R; o <= R; o += spacing) {
+    const runs = [];
+    let run = null;
+    for (let t = -R; t <= R; t += 0.5) {
+      const x = cx + nx * o + dx * t, y = cy + ny * o + dy * t;
+      const xi = Math.floor(x), yi = Math.floor(y);
+      const isDark = xi >= 0 && yi >= 0 && xi < W && yi < H && g[yi * W + xi] < thr;
+      if (isDark && !run) run = [{ x, y }, { x, y }];
+      else if (isDark) run[1] = { x, y };
+      else if (run) { runs.push(run); run = null; }
+    }
+    if (run) runs.push(run);
+    const kept = runs.filter(r => Math.hypot(r[1].x - r[0].x, r[1].y - r[0].y) >= 2);
+    // Alternate direction line by line to save pen-up travel
+    if (flip) { kept.reverse(); kept.forEach(r => r.reverse()); }
+    flip = !flip;
+    lines.push(...kept);
+  }
+  return lines;
+}
+
+function convertImage() {
+  if (!imgElement) { status.innerText = "Choose an image first"; return; }
+  const W = Math.max(20, Math.round(num('imgRes')));
+  const H = Math.max(2, Math.round(W * imgElement.naturalHeight / imgElement.naturalWidth));
+  const dark = num('imgDark') || 1;
+  const g = grayscale(imgElement, W, H, document.getElementById('imgInvert').checked);
+
+  let lines = [];
+  if (document.getElementById('imgOutline').checked)
+    lines.push(...contours(blur(g, W, H), W, H, 128 * dark, 6));
+  const layers = Math.max(0, Math.min(4, Math.round(num('imgLayers'))));
+  const angles = [45, 135, 0, 90];
+  for (let i = 0; i < layers; i++) {
+    // Layer 0 covers mid-tones, each further layer only the darker areas
+    const thr = 255 * dark * (layers - i) / (layers + 1);
+    lines.push(...hatch(g, W, H, thr, angles[i], Math.max(1, num('imgSpacing'))));
+  }
+  if (!lines.length) { status.innerText = "Nothing to draw - try more darkness or layers"; return; }
+
+  lastLines = lines; lastSize = [W, H];
+  document.getElementById('svgDownload').disabled = false;
+  buildQueue(lines, 0, W, 0, H);
+}
+
+function downloadSvg() {
+  if (!lastLines) return;
+  const [W, H] = lastSize;
+  const body = lastLines.map(l => '<polyline points="' +
+    l.map(p => p.x.toFixed(2) + ',' + p.y.toFixed(2)).join(' ') + '"/>').join('\n');
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" ` +
+    `fill="none" stroke="black" stroke-width="0.3">\n${body}\n</svg>\n`;
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml' }));
+  a.download = 'plot.svg';
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
+function startPlot() {
+  runJob(motionQueue);
+}
+</script>
+</body>
+</html>

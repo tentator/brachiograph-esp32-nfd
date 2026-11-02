@@ -4,10 +4,11 @@ import uasyncio as asyncio
 import math
 import time
 import json
+import os
 from machine import Pin, PWM, I2C, SoftI2C
 import ssd1306
 
-REVISION = "REV 10.0"
+REVISION = "REV 12.0"
 
 # --- 1. Self-healing OLED Driver (72x40) ---
 # The built-in framebuf font is fixed at 8x8 px, so 72x40 fits 9 chars x 5 rows.
@@ -24,7 +25,8 @@ def init_oled():
     global oled, has_oled, oled_last_try
     has_oled = False
     oled_last_try = time.ticks_ms()
-    for name, bus in (("HW I2C", lambda: I2C(0, sda=Pin(OLED_SDA), scl=Pin(OLED_SCL), freq=100000)),
+    # 400 kHz keeps a full redraw at ~10 ms, shorter than one 20 ms servo frame
+    for name, bus in (("HW I2C", lambda: I2C(0, sda=Pin(OLED_SDA), scl=Pin(OLED_SCL), freq=400000)),
                       ("SoftI2C", lambda: SoftI2C(sda=Pin(OLED_SDA), scl=Pin(OLED_SCL), freq=100000))):
         try:
             i2c = bus()
@@ -85,6 +87,8 @@ async def oled_task():
     while True:
         await asyncio.sleep_ms(350)
         tick += 1
+        if job["state"] == "running":
+            continue  # no extra redraws while plotting; run_job updates the progress
         scrolling = any(len(str(l)) > OLED_COLS for l in oled_lines)
         if scrolling:
             oled_scroll += 1
@@ -108,16 +112,23 @@ servo_pen      = PWM(Pin(PIN_PEN), freq=50)
 
 # --- 3. Calibration Configuration ---
 config = {
-    "L1": 80.0,
-    "L2": 80.0,
+    "L1": 80.0,          # inner arm (mm)
+    "L2": 80.0,          # outer arm (mm)
     "s1_pw": 1500,
     "s1_ang": -90.0,
     "s1_slope": -10.0,
     "s2_pw": 1500,
     "s2_ang": 90.0,
     "s2_slope": 10.0,
+    "s1_hyst": 0.0,      # hysteresis correction (us), see set_hardware
+    "s2_hyst": 0.0,
     "pen_up": 1450,
-    "pen_down": 1850
+    "pen_down": 1850,
+    "speed": 25.0,       # drawing speed (mm/s)
+    "bed_minx": -50.0,   # drawing area (mm), used by the web page
+    "bed_maxx": 50.0,
+    "bed_miny": 80.0,
+    "bed_maxy": 150.0
 }
 
 # Calibration survives reboots in config.json on the board's flash
@@ -158,30 +169,54 @@ PEN_SETTLE_MS = 150
 # Last commanded position, so tests can restore it and the web UI can stay in sync
 state = {"s": -45.0, "e": 90.0, "pen": False}
 
+# Hysteresis correction (as in the original BrachioGraph): servo gears have some
+# slack, so a joint stops short depending on the direction it came from. Adding
+# half the correction while the pulse rises (and subtracting it while it falls)
+# makes both directions land on the same spot.
+hyst = [[None, 0], [None, 0]]  # per joint: [last uncorrected pulse, direction]
+
+def hysteresis(joint, pw, correction):
+    h = hyst[joint]
+    if h[0] is not None:
+        if pw > h[0]: h[1] = 1
+        elif pw < h[0]: h[1] = -1
+    h[0] = pw
+    return pw + h[1] * correction / 2
+
 def set_hardware(sh_deg, el_deg, pen_down):
     state["s"], state["e"], state["pen"] = sh_deg, el_deg, pen_down
     pw_1 = config["s1_pw"] + (sh_deg - config["s1_ang"]) * config["s1_slope"]
     pw_2 = config["s2_pw"] + (el_deg - config["s2_ang"]) * config["s2_slope"]
     pw_3 = config["pen_down"] if pen_down else config["pen_up"]
-    set_raw_us(pw_1, pw_2, pw_3)
+    set_raw_us(hysteresis(0, pw_1, config["s1_hyst"]),
+               hysteresis(1, pw_2, config["s2_hyst"]), pw_3)
 
 def restore_hardware():
     set_hardware(state["s"], state["e"], state["pen"])
 
-# Big moves are split into steps of GLIDE_STEP_DEG every GLIDE_STEP_MS (~100 deg/s).
-# 20 ms matches the 50 Hz servo frame, so faster updates would just be dropped.
+# Servos take a new position every 20 ms (50 Hz). Every motion step waits for the
+# next frame slot, so each step is actually seen by the servo and the speed is even.
+FRAME_MS = 20
+_next_frame = time.ticks_ms()
+
+async def next_frame():
+    global _next_frame
+    now = time.ticks_ms()
+    if time.ticks_diff(_next_frame, now) < 0:
+        _next_frame = now  # idle or running late: restart the clock instead of rushing to catch up
+    _next_frame = time.ticks_add(_next_frame, FRAME_MS)
+    await asyncio.sleep_ms(time.ticks_diff(_next_frame, now))
+
+# Travel moves and jogs glide in GLIDE_STEP_DEG steps per frame (~100 deg/s)
 GLIDE_STEP_DEG = 2.0
-GLIDE_STEP_MS = 20
 
 async def glide(sh_deg, el_deg):
-    # Small moves (normal G1 drawing steps) go straight through
     s0, e0 = state["s"], state["e"]
-    steps = int(max(abs(sh_deg - s0), abs(el_deg - e0)) / GLIDE_STEP_DEG)
-    for i in range(1, steps):
+    steps = max(1, math.ceil(max(abs(sh_deg - s0), abs(el_deg - e0)) / GLIDE_STEP_DEG))
+    for i in range(1, steps + 1):
         f = i / steps
         set_hardware(s0 + (sh_deg - s0) * f, e0 + (el_deg - e0) * f, state["pen"])
-        await asyncio.sleep_ms(GLIDE_STEP_MS)
-    set_hardware(sh_deg, el_deg, state["pen"])
+        await next_frame()
 
 async def move_to(sh_deg, el_deg, pen_down):
     # Lift the pen before moving, and lower it only after arriving,
@@ -191,8 +226,8 @@ async def move_to(sh_deg, el_deg, pen_down):
         await asyncio.sleep_ms(PEN_SETTLE_MS)
     await glide(sh_deg, el_deg)
     if pen_down and not state["pen"]:
-        await asyncio.sleep_ms(PEN_SETTLE_MS)
         set_hardware(sh_deg, el_deg, True)
+        await asyncio.sleep_ms(PEN_SETTLE_MS)
 
 def inverse_kinematics(x, y):
     # Pen position (mm) -> (shoulder_deg, elbow_deg), or None if unreachable
@@ -212,11 +247,23 @@ def inverse_kinematics(x, y):
 
     return math.degrees(hyp_angle - inner_ang), math.degrees(math.pi - outer_ang)
 
-# Long G1 lines are split into G1_STEP_MM pieces so they stay straight on paper
-# (moving the joints directly between two far points draws an arc).
-G1_STEP_MM = 1.0
-G1_STEP_MS = 15
 pos = {"x": None, "y": None}  # last G-code position in mm, None if unknown
+
+async def line_to(x, y):
+    # Straight pen-down line at config["speed"]: one small step per servo frame.
+    # (Moving the joints directly between two far points would draw an arc.)
+    x0, y0 = pos["x"], pos["y"]
+    if not state["pen"]:
+        set_hardware(state["s"], state["e"], True)  # pen down at the start point
+        await asyncio.sleep_ms(PEN_SETTLE_MS)
+    step = max(0.05, config["speed"] * FRAME_MS / 1000)
+    steps = max(1, math.ceil(math.sqrt((x - x0)**2 + (y - y0)**2) / step))
+    for i in range(1, steps + 1):
+        f = i / steps
+        a = inverse_kinematics(x0 + (x - x0) * f, y0 + (y - y0) * f)
+        if a:
+            set_hardware(a[0], a[1], True)
+            await next_frame()
 
 async def execute_gcode(line):
     parts = line.strip().split()
@@ -230,24 +277,57 @@ async def execute_gcode(line):
     if x is None or y is None:
         return
 
-    pen = (cmd == 'G1')
-    x0, y0 = pos["x"], pos["y"]
-    steps = 0
-    if pen and x0 is not None:
-        steps = int(math.sqrt((x - x0)**2 + (y - y0)**2) / G1_STEP_MM)
-    if steps > 1:
-        if not state["pen"]:
-            await move_to(state["s"], state["e"], True)  # pen down at the start point
-        for i in range(1, steps):
-            f = i / steps
-            a = inverse_kinematics(x0 + (x - x0) * f, y0 + (y - y0) * f)
-            if a:
-                await move_to(a[0], a[1], True)
-                await asyncio.sleep_ms(G1_STEP_MS)
-    a = inverse_kinematics(x, y)
-    if a:
-        await move_to(a[0], a[1], pen)
+    if cmd == 'G1' and pos["x"] is not None:
+        await line_to(x, y)
+    else:
+        a = inverse_kinematics(x, y)
+        if a:
+            await move_to(a[0], a[1], cmd == 'G1')
     pos["x"], pos["y"] = x, y
+
+# --- Plot jobs: the whole drawing is uploaded to flash, then plotted by the board ---
+# The browser can sleep or disconnect meanwhile, and there are no per-point
+# network pauses (which made the arm stop and start at every point).
+JOB_FILE = "job.gcode"
+job = {"state": "idle", "line": 0, "total": 0, "pause": False, "stop": False, "task": None}
+JOB_ACTIVE = ("running", "paused")
+
+async def run_job():
+    job["state"], job["line"] = "running", 0
+    job["pause"] = job["stop"] = False
+    pos["x"] = pos["y"] = None
+    last_oled = time.ticks_ms()
+    update_oled("PLOTTING", "0/%d" % job["total"], "0%")
+    try:
+        with open(JOB_FILE) as f:
+            while not job["stop"]:
+                if job["pause"]:
+                    was_down = state["pen"]
+                    await move_to(state["s"], state["e"], False)
+                    job["state"] = "paused"
+                    update_oled("PAUSED", "%d/%d" % (job["line"], job["total"]))
+                    while job["pause"] and not job["stop"]:
+                        await asyncio.sleep_ms(100)
+                    if job["stop"]:
+                        break
+                    job["state"] = "running"
+                    if was_down:
+                        await move_to(state["s"], state["e"], True)
+                line = f.readline()
+                if not line:
+                    break
+                await execute_gcode(line)
+                job["line"] += 1
+                if time.ticks_diff(time.ticks_ms(), last_oled) > 5000:
+                    last_oled = time.ticks_ms()
+                    pct = job["line"] * 100 // max(1, job["total"])
+                    update_oled("PLOTTING", "%d/%d" % (job["line"], job["total"]), "%d%%" % pct)
+        job["state"] = "stopped" if job["stop"] else "done"
+    except Exception as e:
+        print("Job error:", repr(e))
+        job["state"] = "error"
+    await move_to(state["s"], state["e"], False)
+    update_oled(REVISION, job["state"].upper(), "%d/%d" % (job["line"], job["total"]))
 
 # --- 4. Wi-Fi AP Setup ---
 ap = network.WLAN(network.AP_IF)
@@ -260,498 +340,52 @@ AP_IP = ap.ifconfig()[0]
 print("AP 'ESP32-Plotter' up, IP:", AP_IP)
 
 # --- 5. Web UI ---
-HTML_PAGE = """<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <title>Plotter """ + REVISION + """</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <style>
-    body { font-family: system-ui, sans-serif; margin: 12px; background: #eef1f5; }
-    .card { background: white; padding: 16px; border-radius: 8px; max-width: 460px; margin: auto; box-shadow: 0 2px 8px rgba(0,0,0,0.08); margin-bottom: 12px; }
-    h3, h4 { margin: 4px 0 8px 0; }
-    .badge { background: #0066cc; color: white; padding: 2px 7px; border-radius: 4px; font-size: 12px; }
-    button { background: #0066cc; color: white; border: none; padding: 8px 12px; border-radius: 4px; cursor: pointer; font-size: 14px; margin: 3px 1px; }
-    button:disabled { background: #aaa; }
-    button.alt { background: #4a5568; }
-    button.warn { background: #d97706; }
-    button.test { background: #7c3aed; }
-    button.success { background: #059669; }
-    .btn-row { display: flex; flex-wrap: wrap; gap: 4px; margin: 6px 0; }
-    canvas { border: 1px solid #ccc; display: block; margin: 10px auto; background: #fafafa; border-radius: 4px; }
-    input[type=number] { width: 68px; padding: 4px; }
-    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; font-size: 13px; margin-bottom: 8px; }
-    #status { font-weight: bold; text-align: center; margin: 8px 0; color: #0066cc; }
-    .readout { background: #f8fafc; border: 1px solid #e2e8f0; padding: 6px; border-radius: 4px; font-family: monospace; font-size: 13px; text-align: center; margin-bottom: 8px; }
-  </style>
-</head>
-<body>
-
-<div class="card">
-  <h3>BrachioGraph <span class="badge">""" + REVISION + """</span></h3>
-  <div id="status">Status: Ready</div>
-  <div class="readout" id="posReadout">S: -45° | E: 90° | Pen: UP</div>
-
-  <h4>1. Motor Pin Diagnostic Tests</h4>
-  <div class="btn-row">
-    <button class="test" onclick="sendCmd('TEST_SHOULDER')">Test Shoulder Sweep</button>
-    <button class="test" onclick="sendCmd('TEST_ELBOW')">Test Elbow Sweep</button>
-    <button class="test" onclick="sendCmd('TEST_PEN')">Test Pen</button>
-  </div>
-
-  <h4>2. Safe Nudge Controls (±5°)</h4>
-  <div class="btn-row">
-    <button onclick="jog('S', -5)">S: -5°</button>
-    <button onclick="jog('S', 5)">S: +5°</button>
-    <button onclick="jog('E', -5)">E: -5°</button>
-    <button onclick="jog('E', 5)">E: +5°</button>
-    <button class="alt" onclick="togglePen()">Toggle Pen</button>
-  </div>
-  <div class="btn-row">
-    <button class="warn" onclick="centerBed()">Bed Center (-45°, 90°)</button>
-    <button class="alt" onclick="sendCmd('TEST_OLED')">Refresh OLED</button>
-  </div>
-
-  <h4>3. Direct Motion Test</h4>
-  <button class="success" style="width:100%; padding:10px;" onclick="drawTestSquare()">
-    Draw Test Square (30x30mm)
-  </button>
-</div>
-
-<div class="card">
-  <h4>4. File Plotter (SVG)</h4>
-  <input type="file" id="fileInput" accept=".svg"><br>
-  <canvas id="preview" width="360" height="250"></canvas>
-  <div id="svgHolder" style="position:absolute; width:0; height:0; overflow:hidden; visibility:hidden;"></div>
-  <button id="plotBtn" style="width:100%;" disabled onclick="startPlot()">Plot Loaded SVG</button>
-</div>
-
-<div class="card">
-  <h4>5. Image to Plot (JPG/PNG, converted in the browser)</h4>
-  <input type="file" id="imgInput" accept="image/*"><br>
-  <div class="grid" style="margin-top:8px;">
-    <div>Detail (px): <input type="number" id="imgRes" value="160" min="60" max="400" step="20"></div>
-    <div>Hatch spacing: <input type="number" id="imgSpacing" value="4" min="2" max="12" step="1"></div>
-    <div>Hatch layers: <input type="number" id="imgLayers" value="2" min="0" max="4" step="1"></div>
-    <div>Darkness: <input type="number" id="imgDark" value="1.0" min="0.3" max="2" step="0.1"></div>
-    <div><label><input type="checkbox" id="imgOutline" checked> Outlines</label></div>
-    <div><label><input type="checkbox" id="imgInvert"> Invert</label></div>
-  </div>
-  <div class="btn-row">
-    <button class="alt" onclick="convertImage()">Re-convert</button>
-    <button class="alt" id="svgDownload" disabled onclick="downloadSvg()">Download SVG</button>
-  </div>
-  <div style="font-size:12px; color:#555;">Result appears in the preview above; use "Plot Loaded SVG" to draw it.</div>
-</div>
-
-<div class="card">
-  <h4>6. Live Calibration</h4>
-  <div class="grid">
-    <div>S1 Park: <input type="number" id="s1_ang" value="-90.0" step="1"></div>
-    <div>S2 Park: <input type="number" id="s2_ang" value="90.0" step="1"></div>
-    <div>S1 Slope: <input type="number" id="s1_slope" value="-10.0" step="0.5"></div>
-    <div>S2 Slope: <input type="number" id="s2_slope" value="10.0" step="0.5"></div>
-    <div>Pen Up (us): <input type="number" id="pen_up" value="1450" step="10"></div>
-    <div>Pen Down (us): <input type="number" id="pen_down" value="1850" step="10"></div>
-  </div>
-  <button class="alt" style="width:100%;" onclick="applyConfig()">Apply Config</button>
-</div>
-
-<script>
-let currentS = -45, currentE = 90, penDown = false;
-let motionQueue = [];
-const status = document.getElementById('status');
-const readout = document.getElementById('posReadout');
-const canvas = document.getElementById('preview');
-const ctx = canvas.getContext('2d');
-const BED = { minX: -50, maxX: 50, minY: 80, maxY: 150 };
-
-function updateReadout() {
-  readout.innerText = `S: ${currentS}° | E: ${currentE}° | Pen: ${penDown ? "DOWN" : "UP"}`;
-}
-
-function toCanvasX(x) { return ((x - BED.minX) / (BED.maxX - BED.minX)) * canvas.width; }
-function toCanvasY(y) { return canvas.height - (((y - BED.minY) / (BED.maxY - BED.minY)) * canvas.height); }
-
-function resetCanvas() {
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
-  ctx.strokeStyle = '#ddd';
-  ctx.strokeRect(0, 0, canvas.width, canvas.height);
-}
-resetCanvas();
-
-// Fill the calibration fields with what is saved on the board
-fetch('/config').then(r => r.json()).then(cfg => {
-  const map = { s1_ang: 's1_ang', s2_ang: 's2_ang', s1_slope: 's1_slope', s2_slope: 's2_slope',
-                pen_up: 'pen_up', pen_down: 'pen_down' };
-  for (const k in map) if (k in cfg) document.getElementById(map[k]).value = cfg[k];
-}).catch(() => {});
-
-// Sends one command; syncs the readout with the position the ESP32 reports back.
-async function postCmd(body) {
-  const res = await fetch('/cmd', { method: 'POST', body: body });
-  const txt = await res.text();
-  if (!res.ok) throw new Error(txt);
-  const m = txt.match(/S=(-?[\\d.]+) E=(-?[\\d.]+) P=(\\d)/);
-  if (m) {
-    currentS = Math.round(parseFloat(m[1])); currentE = Math.round(parseFloat(m[2]));
-    penDown = m[3] === '1';
-    updateReadout();
-  }
-  return txt;
-}
-
-async function sendCmd(text) {
-  status.innerText = "Sent: " + text;
-  try {
-    return await postCmd(text);
-  } catch (err) {
-    status.innerText = "Error: " + err.message;
-  }
-}
-
-async function centerBed() {
-  currentS = -45; currentE = 90;
-  updateReadout();
-  await sendCmd('ANG S=-45 E=90 P=0');
-}
-
-async function jog(axis, delta) {
-  if (axis === 'S') currentS += delta;
-  if (axis === 'E') currentE += delta;
-  updateReadout();
-  await sendCmd(`ANG S=${currentS} E=${currentE} P=${penDown ? 1 : 0}`);
-}
-
-async function togglePen() {
-  penDown = !penDown;
-  updateReadout();
-  await sendCmd(`ANG S=${currentS} E=${currentE} P=${penDown ? 1 : 0}`);
-}
-
-async function applyConfig() {
-  const s1a = document.getElementById('s1_ang').value;
-  const s2a = document.getElementById('s2_ang').value;
-  const s1s = document.getElementById('s1_slope').value;
-  const s2s = document.getElementById('s2_slope').value;
-  const pu = document.getElementById('pen_up').value;
-  const pd = document.getElementById('pen_down').value;
-  await sendCmd(`CFG S1A=${s1a} S2A=${s2a} S1S=${s1s} S2S=${s2s} PU=${pu} PD=${pd}`);
-  alert("Configuration applied and saved to the board");
-}
-
-async function runQueue(queue) {
-  for (let i = 0; i < queue.length; i++) {
-    status.innerText = `Drawing: ${i+1} / ${queue.length}`;
-    try {
-      await postCmd(queue[i] + '|' + (i+1) + '/' + queue.length);
-    } catch (err) {
-      status.innerText = `Stopped at ${i+1} / ${queue.length}: ${err.message}`;
-      document.getElementById('plotBtn').disabled = motionQueue.length === 0;
-      return;
-    }
-  }
-  await sendCmd('DONE');
-  status.innerText = "Execution Finished!";
-  document.getElementById('plotBtn').disabled = motionQueue.length === 0;
-}
-
-function drawTestSquare() {
-  // Corners only: the ESP32 splits long G1 lines into 1 mm steps itself
-  const minX = -15, maxX = 15, minY = 100, maxY = 130;
-  const pts = [[minX, minY], [maxX, minY], [maxX, maxY], [minX, maxY], [minX, minY]];
-
-  resetCanvas();
-  ctx.beginPath();
-  ctx.strokeStyle = '#059669';
-  ctx.moveTo(toCanvasX(pts[0][0]), toCanvasY(pts[0][1]));
-
-  const queue = [];
-  queue.push(`G0 X${pts[0][0]} Y${pts[0][1]}`);
-  pts.forEach(p => {
-    queue.push(`G1 X${p[0]} Y${p[1]}`);
-    ctx.lineTo(toCanvasX(p[0]), toCanvasY(p[1]));
-  });
-  ctx.stroke();
-
-  runQueue(queue);
-}
-
-// Every SVG shape the browser can measure (all are SVGGeometryElements)
-const SHAPES = 'path,rect,circle,ellipse,line,polyline,polygon';
-const SIMPLIFY_MM = 0.2;   // max deviation when dropping points after scaling to the bed
-
-document.getElementById('fileInput').addEventListener('change', async (e) => {
-  if (!e.target.files.length) return;
-  const doc = new DOMParser().parseFromString(await e.target.files[0].text(), "image/svg+xml");
-  if (doc.querySelector('parsererror')) { status.innerText = "Error: not a valid SVG"; return; }
-
-  // Attach the SVG (invisibly) so the browser resolves transforms and shape geometry
-  const holder = document.getElementById('svgHolder');
-  holder.innerHTML = '';
-  const svg = holder.appendChild(document.importNode(doc.documentElement, true));
-
-  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-  const sampled = [];
-  const bb = svg.getBBox();
-  const step = Math.max(Math.hypot(bb.width, bb.height) / 500, 1e-3);  // fine, size-independent
-
-  svg.querySelectorAll(SHAPES).forEach(el => {
-    if (el.closest('defs,clipPath,mask,symbol,marker,pattern')) return;  // not drawn directly
-    const len = el.getTotalLength();
-    if (!len) return;
-    const m = el.getCTM();  // includes transform/scale/rotate of the element and its groups
-    const n = Math.ceil(len / step);
-    const pts = [];
-    for (let i = 0; i <= n; i++) {
-      let pt = el.getPointAtLength(len * i / n);
-      if (m) pt = pt.matrixTransform(m);
-      pts.push({ x: pt.x, y: pt.y });
-      if (pt.x < minX) minX = pt.x; if (pt.x > maxX) maxX = pt.x;
-      if (pt.y < minY) minY = pt.y; if (pt.y > maxY) maxY = pt.y;
-    }
-    sampled.push(pts);
-  });
-  holder.innerHTML = '';
-
-  if (!sampled.length) { status.innerText = "No drawable shapes found in SVG"; return; }
-  buildQueue(sampled, minX, maxX, minY, maxY);
-});
-
-// Ramer-Douglas-Peucker: drops points that deviate less than eps from the line
-// through their neighbours, so straight runs collapse to their two endpoints.
-function simplify(pts, eps) {
-  if (pts.length < 3) return pts;
-  const keep = new Uint8Array(pts.length);
-  keep[0] = keep[pts.length - 1] = 1;
-  const stack = [[0, pts.length - 1]];
-  while (stack.length) {
-    const [a, b] = stack.pop();
-    const [ax, ay] = pts[a], [bx, by] = pts[b];
-    const len = Math.hypot(bx - ax, by - ay);
-    let maxD = 0, idx = -1;
-    for (let i = a + 1; i < b; i++) {
-      const [px, py] = pts[i];
-      const d = len ? Math.abs((bx - ax) * (ay - py) - (ax - px) * (by - ay)) / len : Math.hypot(px - ax, py - ay);
-      if (d > maxD) { maxD = d; idx = i; }
-    }
-    if (maxD > eps) { keep[idx] = 1; stack.push([a, idx], [idx, b]); }
-  }
-  return pts.filter((_, i) => keep[i]);
-}
-
-// Fits polylines (any units, y pointing down as in SVG/images) onto the bed,
-// fills motionQueue and draws the preview.
-function buildQueue(sampled, minX, maxX, minY, maxY) {
-  const scale = Math.min((BED.maxX - BED.minX) * 0.9 / (maxX - minX || 1), (BED.maxY - BED.minY) * 0.9 / (maxY - minY || 1));
-  const cX = (minX + maxX)/2, cY = (minY + maxY)/2;
-  const bcX = (BED.minX + BED.maxX)/2, bcY = (BED.minY + BED.maxY)/2;
-
-  motionQueue = [];
-  resetCanvas();
-  ctx.beginPath();
-  ctx.strokeStyle = '#0066cc';
-  let lengthMm = 0;
-
-  sampled.forEach(pts => {
-    const mm = simplify(pts.map(p => [bcX + (p.x - cX) * scale, bcY - (p.y - cY) * scale]), SIMPLIFY_MM);
-    let [lx, ly] = mm[0];
-    motionQueue.push(`G0 X${lx.toFixed(2)} Y${ly.toFixed(2)}`);
-    ctx.moveTo(toCanvasX(lx), toCanvasY(ly));
-    mm.forEach(([px, py]) => {
-      lengthMm += Math.hypot(px - lx, py - ly);
-      motionQueue.push(`G1 X${px.toFixed(2)} Y${py.toFixed(2)}`);
-      ctx.lineTo(toCanvasX(px), toCanvasY(py));
-      lx = px; ly = py;
-    });
-  });
-  ctx.stroke();
-  document.getElementById('plotBtn').disabled = false;
-  // Rough estimate: ~60 ms per request plus ~15 ms per mm of drawn line
-  const minutes = Math.ceil((motionQueue.length * 0.06 + lengthMm * 0.015) / 60);
-  status.innerText = `Ready: ${sampled.length} lines, ${motionQueue.length} points, ~${minutes} min`;
-}
-
-// ---------- Image -> line drawing (runs entirely in the browser) ----------
-// Outlines: marching squares on a blurred copy. Shading: hatch lines over dark
-// areas, one more direction per darker layer (like the original BrachioGraph).
-let imgElement = null, lastLines = null, lastSize = null;
-
-document.getElementById('imgInput').addEventListener('change', (e) => {
-  if (!e.target.files.length) return;
-  const img = new Image();
-  img.onload = () => { imgElement = img; convertImage(); URL.revokeObjectURL(img.src); };
-  img.onerror = () => { status.innerText = "Error: could not read image"; };
-  img.src = URL.createObjectURL(e.target.files[0]);
-});
-
-function num(id) { return parseFloat(document.getElementById(id).value); }
-
-function grayscale(img, W, H, invert) {
-  const c = document.createElement('canvas');
-  c.width = W; c.height = H;
-  const cx = c.getContext('2d');
-  cx.fillStyle = '#fff';  // transparent PNG areas count as white paper
-  cx.fillRect(0, 0, W, H);
-  cx.drawImage(img, 0, 0, W, H);
-  const d = cx.getImageData(0, 0, W, H).data;
-  const g = new Float32Array(W * H);
-  let lo = 255, hi = 0;
-  for (let i = 0; i < W * H; i++) {
-    let v = 0.299 * d[i*4] + 0.587 * d[i*4+1] + 0.114 * d[i*4+2];
-    if (invert) v = 255 - v;
-    g[i] = v;
-    if (v < lo) lo = v; if (v > hi) hi = v;
-  }
-  const k = 255 / ((hi - lo) || 1);  // stretch contrast to the full range
-  for (let i = 0; i < g.length; i++) g[i] = (g[i] - lo) * k;
-  return g;
-}
-
-function blur(g, W, H) {
-  const out = new Float32Array(W * H);
-  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
-    let sum = 0, n = 0;
-    for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
-      const xx = x + dx, yy = y + dy;
-      if (xx >= 0 && yy >= 0 && xx < W && yy < H) { sum += g[yy * W + xx]; n++; }
-    }
-    out[y * W + x] = sum / n;
-  }
-  return out;
-}
-
-// Marching squares edge pairs per case (tl=8, tr=4, br=2, bl=1); edges 0=top 1=right 2=bottom 3=left
-const MS_CASES = [[], [[3,2]], [[2,1]], [[3,1]], [[0,1]], [[0,1],[3,2]], [[0,2]], [[3,0]],
-                  [[3,0]], [[0,2]], [[3,0],[2,1]], [[0,1]], [[3,1]], [[2,1]], [[3,2]], []];
-
-function contours(g, W, H, thr, minPts) {
-  const pts = new Map(), adj = new Map();
-  const dark = (x, y) => g[y * W + x] < thr;
-  // Each crossing point is identified by its grid edge: horizontal = even id, vertical = odd id
-  function edgePoint(x, y, edge) {
-    let id, ax, ay, bx, by;
-    if (edge === 0) { ax = x; ay = y; bx = x + 1; by = y; }
-    else if (edge === 2) { ax = x; ay = y + 1; bx = x + 1; by = y + 1; }
-    else if (edge === 3) { ax = x; ay = y; bx = x; by = y + 1; }
-    else { ax = x + 1; ay = y; bx = x + 1; by = y + 1; }
-    id = (ay * W + ax) * 2 + (ay === by ? 0 : 1);
-    if (!pts.has(id)) {
-      const va = g[ay * W + ax], vb = g[by * W + bx];
-      const t = va === vb ? 0.5 : Math.min(1, Math.max(0, (thr - va) / (vb - va)));
-      pts.set(id, { x: ax + (bx - ax) * t, y: ay + (by - ay) * t });
-    }
-    return id;
-  }
-  function link(a, b) {
-    if (!adj.has(a)) adj.set(a, []);
-    if (!adj.has(b)) adj.set(b, []);
-    adj.get(a).push(b); adj.get(b).push(a);
-  }
-  for (let y = 0; y < H - 1; y++) for (let x = 0; x < W - 1; x++) {
-    const c = (dark(x, y) ? 8 : 0) | (dark(x + 1, y) ? 4 : 0) | (dark(x + 1, y + 1) ? 2 : 0) | (dark(x, y + 1) ? 1 : 0);
-    for (const [e1, e2] of MS_CASES[c]) link(edgePoint(x, y, e1), edgePoint(x, y, e2));
-  }
-  // Every point has at most 2 neighbours, so the segments join into simple chains
-  const seen = new Set(), lines = [];
-  function walk(start) {
-    const line = [];
-    let prev = -1, cur = start;
-    while (cur !== undefined && !seen.has(cur)) {
-      seen.add(cur);
-      line.push(pts.get(cur));
-      const next = adj.get(cur).find(n => n !== prev && !seen.has(n));
-      prev = cur; cur = next;
-    }
-    // Close loops back to their start point
-    if (line.length > 2 && adj.get(start).includes(prev)) line.push(pts.get(start));
-    return line;
-  }
-  for (const [id, nb] of adj) if (nb.length === 1 && !seen.has(id)) lines.push(walk(id));  // open chains
-  for (const id of adj.keys()) if (!seen.has(id)) lines.push(walk(id));                    // closed loops
-  return lines.filter(l => l.length >= minPts);
-}
-
-function hatch(g, W, H, thr, angleDeg, spacing) {
-  const a = angleDeg * Math.PI / 180;
-  const dx = Math.cos(a), dy = Math.sin(a);   // along the line
-  const nx = -dy, ny = dx;                    // across the lines
-  const cx = W / 2, cy = H / 2, R = Math.hypot(W, H) / 2;
-  const lines = [];
-  let flip = false;
-  for (let o = -R; o <= R; o += spacing) {
-    const runs = [];
-    let run = null;
-    for (let t = -R; t <= R; t += 0.5) {
-      const x = cx + nx * o + dx * t, y = cy + ny * o + dy * t;
-      const xi = Math.floor(x), yi = Math.floor(y);
-      const isDark = xi >= 0 && yi >= 0 && xi < W && yi < H && g[yi * W + xi] < thr;
-      if (isDark && !run) run = [{ x, y }, { x, y }];
-      else if (isDark) run[1] = { x, y };
-      else if (run) { runs.push(run); run = null; }
-    }
-    if (run) runs.push(run);
-    const kept = runs.filter(r => Math.hypot(r[1].x - r[0].x, r[1].y - r[0].y) >= 2);
-    // Alternate direction line by line to save pen-up travel
-    if (flip) { kept.reverse(); kept.forEach(r => r.reverse()); }
-    flip = !flip;
-    lines.push(...kept);
-  }
-  return lines;
-}
-
-function convertImage() {
-  if (!imgElement) { status.innerText = "Choose an image first"; return; }
-  const W = Math.max(20, Math.round(num('imgRes')));
-  const H = Math.max(2, Math.round(W * imgElement.naturalHeight / imgElement.naturalWidth));
-  const dark = num('imgDark') || 1;
-  const g = grayscale(imgElement, W, H, document.getElementById('imgInvert').checked);
-
-  let lines = [];
-  if (document.getElementById('imgOutline').checked)
-    lines.push(...contours(blur(g, W, H), W, H, 128 * dark, 6));
-  const layers = Math.max(0, Math.min(4, Math.round(num('imgLayers'))));
-  const angles = [45, 135, 0, 90];
-  for (let i = 0; i < layers; i++) {
-    // Layer 0 covers mid-tones, each further layer only the darker areas
-    const thr = 255 * dark * (layers - i) / (layers + 1);
-    lines.push(...hatch(g, W, H, thr, angles[i], Math.max(1, num('imgSpacing'))));
-  }
-  if (!lines.length) { status.innerText = "Nothing to draw - try more darkness or layers"; return; }
-
-  lastLines = lines; lastSize = [W, H];
-  document.getElementById('svgDownload').disabled = false;
-  buildQueue(lines, 0, W, 0, H);
-}
-
-function downloadSvg() {
-  if (!lastLines) return;
-  const [W, H] = lastSize;
-  const body = lastLines.map(l => '<polyline points="' +
-    l.map(p => p.x.toFixed(2) + ',' + p.y.toFixed(2)).join(' ') + '"/>').join('\\n');
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" ` +
-    `fill="none" stroke="black" stroke-width="0.3">\\n${body}\\n</svg>\\n`;
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml' }));
-  a.download = 'plot.svg';
-  a.click();
-  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
-}
-
-function startPlot() {
-  document.getElementById('plotBtn').disabled = true;
-  runQueue(motionQueue);
-}
-</script>
-</body>
-</html>
-"""
-HTML_BYTES = memoryview(HTML_PAGE.encode('utf-8'))  # encode once at boot, not per request
-del HTML_PAGE
+# The page is a separate file on flash (upload brachio-web-12.html as index.html).
+# Embedding it as a string made the script too big to compile in the C3's RAM.
+WEB_FILE = "index.html"
+web_buf = bytearray(1024)  # reused for every page request
 
 # --- 6. Async Server Loop ---
+MOTION_CMDS = ("G0", "G1", "ANG", "TEST_SHOULDER", "TEST_ELBOW", "TEST_PEN", "DONE")
+MAX_CHUNK = 8192
+
 async def handle_cmd(cmd_text, progress):
-    if cmd_text == "TEST_SHOULDER":
+    if job["state"] in JOB_ACTIVE and cmd_text.split(" ", 1)[0] in MOTION_CMDS + ("JOB_BEGIN", "JOB_START"):
+        raise ValueError("busy: a plot is in progress")
+
+    if cmd_text.startswith("JOB_BEGIN"):
+        # JOB_BEGIN <lines> <bytes>: start a new upload, checking there is room on flash
+        _, total, size = cmd_text.split()
+        st = os.statvfs("/")
+        free = st[0] * st[4]
+        try:
+            free += os.stat(JOB_FILE)[6]  # the old job file gets replaced
+        except OSError:
+            pass
+        if int(size) > free - 16384:
+            raise ValueError("drawing too big: %d bytes, %d free" % (int(size), free))
+        open(JOB_FILE, "w").close()
+        job["state"], job["total"], job["line"] = "uploading", int(total), 0
+        update_oled("UPLOADING", total + " pts")
+
+    elif cmd_text == "JOB_START":
+        if job["state"] != "uploading":
+            raise ValueError("no uploaded job")
+        job["state"] = "running"
+        job["task"] = asyncio.create_task(run_job())  # keep a reference to the task
+
+    elif cmd_text == "JOB_PAUSE":
+        job["pause"] = True
+
+    elif cmd_text == "JOB_RESUME":
+        job["pause"] = False
+
+    elif cmd_text == "JOB_STOP":
+        job["stop"] = True
+        if job["state"] == "uploading":
+            job["state"] = "stopped"
+
+    elif cmd_text == "TEST_SHOULDER":
         update_oled("TESTING", "SHOULDER")
         # Directly sweep shoulder pin between 1200us and 1800us
         for pw in [1200, 1500, 1800, 1500]:
@@ -793,12 +427,17 @@ async def handle_cmd(cmd_text, progress):
         update_oled(f"S:{int(s_val)}", f"E:{int(e_val)}", "PEN DOWN" if p_val else "PEN UP")
 
     elif cmd_text.startswith("CFG"):
-        keys = {'S1A': "s1_ang", 'S2A': "s2_ang", 'S1S': "s1_slope", 'S2S': "s2_slope",
-                'PU': "pen_up", 'PD': "pen_down"}
+        # CFG key=value ... with the config key names; unknown keys are rejected
+        new = {}
         for p in cmd_text.split()[1:]:
             k, v = p.split('=')
-            if k in keys and v:
-                config[keys[k]] = float(v)
+            if k not in config:
+                raise ValueError("unknown setting " + k)
+            if v:
+                new[k] = float(v)
+        if new.get("L1", 1) <= 0 or new.get("L2", 1) <= 0 or new.get("speed", 1) <= 0:
+            raise ValueError("arm lengths and speed must be positive")
+        config.update(new)
         save_config()
         restore_hardware()  # apply new calibration to the current position
         update_oled("CONFIG", "SAVED")
@@ -815,7 +454,7 @@ async def handle_cmd(cmd_text, progress):
 async def handle_client(reader, writer):
     try:
         req = (await reader.readline()).decode('utf-8')
-        if not req.startswith("POST /cmd"):
+        if not req.startswith(("POST /cmd", "GET /status", "POST /job")):
             print("HTTP:", req.strip())
         length = 0
         while True:
@@ -831,15 +470,44 @@ async def handle_client(reader, writer):
                 "Cache-Control: no-cache, no-store, must-revalidate\r\n"
                 "Connection: close\r\n\r\n"
             )
-            writer.write(headers.encode('utf-8'))
-            # Send in chunks: one big write needs the whole page buffered twice
-            for i in range(0, len(HTML_BYTES), 2048):
-                writer.write(HTML_BYTES[i:i + 2048])
-                await writer.drain()
+            try:
+                f = open(WEB_FILE, "rb")
+            except OSError:
+                print("Web page missing: upload brachio-web-12.html to the board as", WEB_FILE)
+                writer.write(b"HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\n"
+                             b"index.html is missing on the board: upload brachio-web-12.html as index.html")
+            else:
+                # Stream from flash in 1 KB pieces so the page never sits in RAM
+                writer.write(headers.encode('utf-8'))
+                mv = memoryview(web_buf)
+                with f:
+                    while True:
+                        n = f.readinto(web_buf)
+                        if not n:
+                            break
+                        writer.write(mv[:n])
+                        await writer.drain()
         elif req.startswith("GET /config "):
             # Lets the web UI show the saved calibration instead of hardcoded defaults
             writer.write(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n")
             writer.write(json.dumps(config).encode())
+        elif req.startswith("GET /status "):
+            # Polled by the web page while a job runs
+            st = {"rev": REVISION, "job": job["state"], "line": job["line"], "total": job["total"],
+                  "s": state["s"], "e": state["e"], "p": int(state["pen"])}
+            writer.write(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n")
+            writer.write(json.dumps(st).encode())
+        elif req.startswith("POST /job "):
+            # One chunk of G-code lines, appended to the job file
+            if job["state"] != "uploading":
+                writer.write(b"HTTP/1.1 409 Conflict\r\nConnection: close\r\n\r\nERR not uploading")
+            elif length > MAX_CHUNK:
+                writer.write(b"HTTP/1.1 413 Payload Too Large\r\nConnection: close\r\n\r\nERR chunk too big")
+            else:
+                data = await reader.readexactly(length) if length else b""
+                with open(JOB_FILE, "ab") as f:
+                    f.write(data)
+                writer.write(b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\nOK")
         elif req.startswith("POST /cmd"):
             # read(256) may return a partial body; read exactly Content-Length bytes
             raw = (await reader.readexactly(length)).decode('utf-8').strip() if length else ""
