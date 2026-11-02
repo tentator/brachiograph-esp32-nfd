@@ -7,8 +7,8 @@ path planning) happens in your browser. The finished drawing is uploaded to the 
 simple `G0`/`G1` commands and the board plots it on its own, so the phone can sleep or
 disconnect meanwhile.
 
-Current version: **`brachio-codez-oled-12.py`** (REV 12.0) with its web page
-**`brachio-web-12.html`**
+Current version: **`brachio-codez-oled-14.py`** (REV 14.0) with its web page
+**`brachio-web-14.html`**
 
 ---
 
@@ -75,8 +75,8 @@ Three files are needed on the board:
 | On your computer | On the board |
 |---|---|
 | `ssd1306.py` | `ssd1306.py` |
-| `brachio-codez-oled-12.py` | `main.py` (runs automatically at boot) |
-| `brachio-web-12.html` | `index.html` (the web page) |
+| `brachio-codez-oled-14.py` | `main.py` (runs automatically at boot) |
+| `brachio-web-14.html` | `index.html` (the web page) |
 
 The web page is a separate file because the ESP32-C3 has little RAM: MicroPython compiles the
 whole script in memory before running it, and with the page embedded as a string (REV 11) the
@@ -88,8 +88,8 @@ With Thonny: open the file, *File → Save as… → MicroPython device*. Or wit
 
 ```sh
 mpremote cp ssd1306.py :ssd1306.py
-mpremote cp brachio-codez-oled-12.py :main.py
-mpremote cp brachio-web-12.html :index.html
+mpremote cp brachio-codez-oled-14.py :main.py
+mpremote cp brachio-web-14.html :index.html
 ```
 
 Two more files appear on the board by themselves:
@@ -139,11 +139,11 @@ Three lines of 9 characters (the built-in MicroPython font is a fixed 8x8 px, so
 
 | Display | Meaning |
 |---|---|
-| `REV 12.0` / `READY` / IP | Server running |
+| `REV 14.0` / `READY` / IP | Server running |
 | `UPLOADING` / `840 pts` | Receiving a drawing |
 | `PLOTTING` / `120/840` / `14%` | Plotting, line 120 of 840 (updated every 5 s) |
 | `PAUSED` / `120/840` | Plot paused |
-| `REV 12.0` / `DONE` (or `STOPPED`, `ERROR`) / `840/840` | Plot ended |
+| `REV 14.0` / `DONE` (or `STOPPED`, `ERROR`) / `840/840` | Plot ended |
 | `S:-45` / `E:90` / `PEN UP` | After a jog or angle command |
 | `NO SERVER` / `PRESS RST` | Port 80 still in use after a soft reboot; press RESET |
 
@@ -170,6 +170,12 @@ the motion), and only the progress is updated every 5 s.
    - Not supported: text (convert to paths first, e.g. Inkscape *Path → Object to Path*),
      embedded images, fills (only outlines are drawn).
    - The drawing is scaled to fill 90 % of the drawing area, keeping its proportions.
+   - **Rotate 90° when that makes the drawing bigger** (on by default): a drawing whose shape
+     suits the area better when turned, typically a portrait image on the landscape drawing
+     area, is rotated 90° clockwise (its top ends up on the right). The status line then says
+     *rotated 90°* and shows the final size in mm. The drawing area itself doesn't change, so
+     the paper stays where it is; turn the paper to view the result upright. Untick it to always
+     plot upright.
    - The status line shows the number of lines/points and a rough time estimate.
 5. **Image to Plot.** Converts a JPG/PNG into lines in the browser; see
    [below](#image-to-plot-conversion).
@@ -322,9 +328,13 @@ to the ESP32 except the final coordinates). It works like the original BrachioGr
 | Detail (px) | Working resolution. Higher = finer outlines but many more points. 120–200 is a good range. |
 | Hatch spacing | Distance between hatch lines in working pixels. Smaller = darker and slower. |
 | Hatch layers | 0 = outlines only; 1–4 = more shading levels. |
-| Darkness | Multiplies all thresholds: >1 draws more (lighter areas get lines), <1 draws less. |
+| Darkness | Multiplies all thresholds: >1 draws more (lighter areas get lines), <1 draws less. Accepts `1.5` or `1,5`. |
 | Outlines | Turn contour tracing on/off. |
 | Invert | Swap dark and light (for white-on-black images). |
+
+The preview updates as soon as you change a setting (*Re-convert* does the same by hand), and
+the status line confirms the settings used, e.g. *Converted (darkness 1.5, 2 layers)*. If the
+settings leave nothing to draw, the preview is cleared and plotting is disabled.
 
 *Download SVG* saves the result as polylines, to keep or edit in Inkscape. Loading that SVG in
 section 4 gives the same plot.
@@ -454,7 +464,7 @@ The drawing area is no longer a constant in the page: it comes from the board's 
 |---|---|
 | Thonny's shell shows nothing | The program was started at boot before Thonny connected. Run it with F5 from Thonny instead. |
 | No Wi-Fi network at all, OLED blank or unchanged after boot | The script didn't start. Run it with F5 in Thonny to see the error. `MemoryError` means the script is too big for the RAM (as REV 11 was); otherwise check that `ssd1306.py` is on the board. |
-| Page shows "index.html is missing on the board" | Upload `brachio-web-12.html` to the board as `index.html`. |
+| Page shows "index.html is missing on the board" | Upload `brachio-web-14.html` to the board as `index.html`. |
 | Page looks outdated or buttons don't work after an update | Script and page are from different revisions; upload both from the same revision and reload the page. |
 | Wi-Fi connects but the page doesn't load | Most often Thonny stopped the program (OLED dot not blinking): reset the board with Thonny disconnected. Otherwise use `http://` explicitly and turn off mobile data. |
 | Page loads sometimes, connection unstable | These small C3 boards have weak antennas; try `ap.config(txpower=8.5)` after `ap.active(True)`. |
@@ -477,8 +487,8 @@ The drawing area is no longer a constant in the page: it comes from the board's 
 
 | File | Description |
 |---|---|
-| `brachio-codez-oled-12.py` | **Current version** (upload as `main.py`) |
-| `brachio-web-12.html` | Its web page (upload as `index.html`) |
+| `brachio-codez-oled-14.py` | **Current version** (upload as `main.py`) |
+| `brachio-web-14.html` | Its web page (upload as `index.html`) |
 | `ssd1306.py` | OLED driver (MicroPython standard driver) |
 | `ESP32_GENERIC_C3-20260824-v1.29.0.bin` | MicroPython firmware for the ESP32-C3 |
 | `square-svg.svg` | 40x40 test square for the SVG plotter |
@@ -499,3 +509,5 @@ Revisions (each in its own file, older ones kept for fallback):
 | 10 | Image → line drawing in the browser (outlines + hatching, SVG download); straight G1 lines split on the board; path simplification; page sent in chunks to save RAM |
 | 11 | (Doesn't start on the board: too big to compile in RAM, so no Wi-Fi. Use 12.) Drawings uploaded to the board's flash and plotted by the board (pause/resume/stop, progress, survives phone sleep); motion synced to 20 ms servo frames at constant, adjustable speed; hysteresis correction; arm lengths and drawing area editable, with auto-fit; screen wake lock when the browser allows it; OLED at 400 kHz |
 | 12 | Same features as 11; web page moved to a separate file (`index.html`) streamed from flash, so the script compiles and runs in the C3's RAM again (needs less memory than REV 10); revision badge read from the board |
+| 13 | Image to Plot: preview updates on every setting change; loaded image kept in the page's own canvas (mobile browsers could discard it, so re-convert did nothing); Darkness accepts a decimal comma; errors shown instead of failing silently; "nothing to draw" clears the preview |
+| 14 | Option to rotate drawings 90° when that makes them bigger (portrait images on the landscape area); status line shows the final size in mm |

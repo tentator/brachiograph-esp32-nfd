@@ -70,6 +70,7 @@
   <input type="file" id="fileInput" accept=".svg"><br>
   <canvas id="preview" width="360" height="250"></canvas>
   <div id="svgHolder" style="position:absolute; width:0; height:0; overflow:hidden; visibility:hidden;"></div>
+  <div style="font-size:13px; margin-bottom:6px;"><label><input type="checkbox" id="autoRotate" checked> Rotate 90° when that makes the drawing bigger</label></div>
   <button id="plotBtn" style="width:100%;" disabled onclick="startPlot()">Plot Loaded SVG</button>
 </div>
 
@@ -80,7 +81,7 @@
     <div>Detail (px): <input type="number" id="imgRes" value="160" min="60" max="400" step="20"></div>
     <div>Hatch spacing: <input type="number" id="imgSpacing" value="4" min="2" max="12" step="1"></div>
     <div>Hatch layers: <input type="number" id="imgLayers" value="2" min="0" max="4" step="1"></div>
-    <div>Darkness: <input type="number" id="imgDark" value="1.0" min="0.3" max="2" step="0.1"></div>
+    <div>Darkness: <input type="text" inputmode="decimal" id="imgDark" value="1.0" style="width:68px; padding:4px;"></div>
     <div><label><input type="checkbox" id="imgOutline" checked> Outlines</label></div>
     <div><label><input type="checkbox" id="imgInvert"> Invert</label></div>
   </div>
@@ -88,7 +89,7 @@
     <button class="alt" onclick="convertImage()">Re-convert</button>
     <button class="alt" id="svgDownload" disabled onclick="downloadSvg()">Download SVG</button>
   </div>
-  <div style="font-size:12px; color:#555;">Result appears in the preview above; use "Plot Loaded SVG" to draw it.</div>
+  <div style="font-size:12px; color:#555;">The preview above updates when you change a setting; use "Plot Loaded SVG" to draw it.</div>
 </div>
 
 <div class="card">
@@ -474,9 +475,20 @@ function simplify(pts, eps) {
 // fills motionQueue and draws the preview.
 function buildQueue(sampled, minX, maxX, minY, maxY) {
   lastDrawing = [sampled, minX, maxX, minY, maxY];
-  const scale = Math.min((BED.maxX - BED.minX) * 0.9 / (maxX - minX || 1), (BED.maxY - BED.minY) * 0.9 / (maxY - minY || 1));
+  const bedW = (BED.maxX - BED.minX) * 0.9, bedH = (BED.maxY - BED.minY) * 0.9;
+  const w = maxX - minX || 1, h = maxY - minY || 1;
+  const scaleUpright = Math.min(bedW / w, bedH / h);
+  const scaleRotated = Math.min(bedW / h, bedH / w);  // width and height swap when turned
+  // Turn the drawing (e.g. a portrait image on a landscape area) if it then comes out bigger
+  const rotate = document.getElementById('autoRotate').checked && scaleRotated > scaleUpright * 1.01;
+  const scale = rotate ? scaleRotated : scaleUpright;
   const cX = (minX + maxX)/2, cY = (minY + maxY)/2;
   const bcX = (BED.minX + BED.maxX)/2, bcY = (BED.minY + BED.maxY)/2;
+  // Source y points down (SVG/images), bed y points up. Rotated = 90° clockwise:
+  // the top of the drawing ends up on the right.
+  const toBed = rotate
+    ? p => [bcX - (p.y - cY) * scale, bcY - (p.x - cX) * scale]
+    : p => [bcX + (p.x - cX) * scale, bcY - (p.y - cY) * scale];
 
   motionQueue = [];
   resetCanvas();
@@ -485,7 +497,7 @@ function buildQueue(sampled, minX, maxX, minY, maxY) {
   let lengthMm = 0;
 
   sampled.forEach(pts => {
-    const mm = simplify(pts.map(p => [bcX + (p.x - cX) * scale, bcY - (p.y - cY) * scale]), SIMPLIFY_MM);
+    const mm = simplify(pts.map(toBed), SIMPLIFY_MM);
     let [lx, ly] = mm[0];
     motionQueue.push(`G0 X${lx.toFixed(2)} Y${ly.toFixed(2)}`);
     ctx.moveTo(toCanvasX(lx), toCanvasY(ly));
@@ -500,23 +512,45 @@ function buildQueue(sampled, minX, maxX, minY, maxY) {
   document.getElementById('plotBtn').disabled = false;
   // Rough estimate: drawing at the set speed plus ~0.5 s per pen lift and travel
   const minutes = Math.ceil((lengthMm / (boardCfg.speed || 25) + sampled.length * 0.5) / 60);
-  status.innerText = `Ready: ${sampled.length} lines, ${motionQueue.length} points, ~${minutes} min`;
+  const sizeMm = rotate ? [h * scale, w * scale] : [w * scale, h * scale];
+  status.innerText = `Ready${rotate ? ' (rotated 90°)' : ''}: ${Math.round(sizeMm[0])} x ${Math.round(sizeMm[1])} mm, ${sampled.length} lines, ${motionQueue.length} points, ~${minutes} min`;
 }
 
 // ---------- Image -> line drawing (runs entirely in the browser) ----------
 // Outlines: marching squares on a blurred copy. Shading: hatch lines over dark
 // areas, one more direction per darker layer (like the original BrachioGraph).
-let imgElement = null, lastLines = null, lastSize = null;
+let imgSource = null, lastLines = null, lastSize = null;
+const IMG_MAX_PX = 1200;  // the loaded image is kept at most this size (plenty for 400 px detail)
 
 document.getElementById('imgInput').addEventListener('change', (e) => {
   if (!e.target.files.length) return;
   const img = new Image();
-  img.onload = () => { imgElement = img; convertImage(); URL.revokeObjectURL(img.src); };
-  img.onerror = () => { status.innerText = "Error: could not read image"; };
+  img.onload = () => {
+    // Copy the picture into our own canvas: mobile browsers may discard a decoded
+    // image to save memory, and once its file URL is revoked it can't be redrawn,
+    // which made later re-conversions fail silently.
+    const k = Math.min(1, IMG_MAX_PX / Math.max(img.naturalWidth, img.naturalHeight));
+    const c = document.createElement('canvas');
+    c.width = Math.max(1, Math.round(img.naturalWidth * k));
+    c.height = Math.max(1, Math.round(img.naturalHeight * k));
+    c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+    URL.revokeObjectURL(img.src);
+    imgSource = c;
+    convertImage();
+  };
+  img.onerror = () => { status.innerText = "Error: could not read image"; URL.revokeObjectURL(img.src); };
   img.src = URL.createObjectURL(e.target.files[0]);
 });
 
-function num(id) { return parseFloat(document.getElementById(id).value); }
+// Re-fit the loaded drawing when the rotation option changes
+document.getElementById('autoRotate').addEventListener('change', () => { if (lastDrawing) buildQueue(...lastDrawing); });
+
+// Re-convert automatically whenever a setting changes
+['imgRes', 'imgSpacing', 'imgLayers', 'imgDark', 'imgOutline', 'imgInvert'].forEach(id =>
+  document.getElementById(id).addEventListener('change', () => { if (imgSource) convertImage(); }));
+
+// Accepts "1,5" as well as "1.5" (phones with a German keyboard type a comma)
+function num(id) { return parseFloat(String(document.getElementById(id).value).replace(',', '.')); }
 
 function grayscale(img, W, H, invert) {
   const c = document.createElement('canvas');
@@ -632,11 +666,19 @@ function hatch(g, W, H, thr, angleDeg, spacing) {
 }
 
 function convertImage() {
-  if (!imgElement) { status.innerText = "Choose an image first"; return; }
-  const W = Math.max(20, Math.round(num('imgRes')));
-  const H = Math.max(2, Math.round(W * imgElement.naturalHeight / imgElement.naturalWidth));
-  const dark = num('imgDark') || 1;
-  const g = grayscale(imgElement, W, H, document.getElementById('imgInvert').checked);
+  if (!imgSource) { status.innerText = "Choose an image first"; return; }
+  try {
+    convertImageNow();
+  } catch (err) {
+    status.innerText = "Conversion failed: " + err.message;  // never fail silently
+  }
+}
+
+function convertImageNow() {
+  const W = Math.max(20, Math.min(600, Math.round(num('imgRes') || 160)));
+  const H = Math.max(2, Math.round(W * imgSource.height / imgSource.width));
+  const dark = Math.max(0.1, Math.min(3, num('imgDark') || 1));
+  const g = grayscale(imgSource, W, H, document.getElementById('imgInvert').checked);
 
   let lines = [];
   if (document.getElementById('imgOutline').checked)
@@ -646,13 +688,22 @@ function convertImage() {
   for (let i = 0; i < layers; i++) {
     // Layer 0 covers mid-tones, each further layer only the darker areas
     const thr = 255 * dark * (layers - i) / (layers + 1);
-    lines.push(...hatch(g, W, H, thr, angles[i], Math.max(1, num('imgSpacing'))));
+    lines.push(...hatch(g, W, H, thr, angles[i], Math.max(1, num('imgSpacing') || 4)));
   }
-  if (!lines.length) { status.innerText = "Nothing to draw - try more darkness or layers"; return; }
+  if (!lines.length) {
+    // Clear the old result so the preview never shows something that won't be plotted
+    motionQueue = []; lastDrawing = null; lastLines = null;
+    resetCanvas();
+    document.getElementById('plotBtn').disabled = true;
+    document.getElementById('svgDownload').disabled = true;
+    status.innerText = "Nothing to draw - try more darkness or layers";
+    return;
+  }
 
   lastLines = lines; lastSize = [W, H];
   document.getElementById('svgDownload').disabled = false;
   buildQueue(lines, 0, W, 0, H);
+  status.innerText = `Converted (darkness ${dark}, ${layers} layers): ` + status.innerText;
 }
 
 function downloadSvg() {
