@@ -6,9 +6,15 @@ import time
 import json
 import os
 from machine import Pin, PWM, I2C, SoftI2C
-import ssd1306
 
 REVISION = "REV 15.0"
+
+# Set to True on boards with an OLED (see OLED_SDA/OLED_SCL below). When False, nothing
+# touches the display pins and ssd1306.py doesn't need to be on the board.
+USE_OLED = False
+
+if USE_OLED:
+    import ssd1306
 
 # --- 1. Self-healing OLED Driver (72x40) ---
 # The built-in framebuf font is fixed at 8x8 px, so 72x40 fits 9 chars x 5 rows.
@@ -23,6 +29,8 @@ oled_last_try = 0
 
 def init_oled():
     global oled, has_oled, oled_last_try
+    if not USE_OLED:
+        return False
     has_oled = False
     oled_last_try = time.ticks_ms()
     # 400 kHz keeps a full redraw at ~10 ms, shorter than one 20 ms servo frame
@@ -52,6 +60,8 @@ oled_beat = False
 def draw_oled():
     # Lines longer than 9 chars scroll as a marquee (advanced by oled_task)
     global has_oled
+    if not USE_OLED:
+        return
     if not has_oled:
         # Retry at most every 5 s so a dead display can't slow down plotting
         if time.ticks_diff(time.ticks_ms(), oled_last_try) < 5000 or not init_oled():
@@ -101,10 +111,10 @@ init_oled()
 update_oled(REVISION, "BOOTING")
 
 # --- 2. Hardware Pin Assignments ---
-# If GPIO 0 was damaged during the stall, change PIN_SHOULDER to 4
-PIN_SHOULDER = 0
-PIN_ELBOW    = 1
-PIN_PEN      = 3
+# ESP32-WROOM: GPIO 34-39 are input-only, so they can't drive a servo
+PIN_SHOULDER = 26
+PIN_ELBOW    = 18
+PIN_PEN      = 19
 
 servo_shoulder = PWM(Pin(PIN_SHOULDER), freq=50)
 servo_elbow    = PWM(Pin(PIN_ELBOW), freq=50)
@@ -329,15 +339,63 @@ async def run_job():
     await move_to(state["s"], state["e"], False)
     update_oled(REVISION, job["state"].upper(), "%d/%d" % (job["line"], job["total"]))
 
-# --- 4. Wi-Fi AP Setup ---
-ap = network.WLAN(network.AP_IF)
-ap.active(True)
-ap.config(essid="ESP32-Plotter", password="plotterpassword")
-while not ap.active():
-    time.sleep_ms(100)
-# AP mode defaults to 192.168.4.1 (ESP-IDF default); read it instead of assuming
-AP_IP = ap.ifconfig()[0]
-print("AP 'ESP32-Plotter' up, IP:", AP_IP)
+# --- 4. Wi-Fi Setup ---
+# Joins the network named in wifi_config.py on the board's flash, which holds:
+#     WIFI_SSID = "my-network"
+#     WIFI_PASSWORD = "my-password"
+# With no such file, an empty SSID or a failed connection, the board starts its own
+# access point instead. The credentials stay out of `config`, which GET /config serves.
+HOSTNAME = "plotter"
+AP_SSID = "ESP32-Plotter"
+AP_PASSWORD = "plotterpassword"
+
+def connect_wifi():
+    try:
+        from wifi_config import WIFI_SSID, WIFI_PASSWORD
+    except Exception as e:  # missing file or name, or a typo in the file
+        print("No usable wifi_config.py:", repr(e))
+        WIFI_SSID = WIFI_PASSWORD = None
+
+    try:
+        network.hostname(HOSTNAME)
+    except Exception:
+        pass
+
+    ap = network.WLAN(network.AP_IF)
+    sta = network.WLAN(network.STA_IF)
+    sta.active(True)
+
+    if WIFI_SSID:
+        try:
+            if not sta.isconnected():
+                print("Connecting to Wi-Fi", WIFI_SSID, end="")
+                sta.connect(WIFI_SSID, WIFI_PASSWORD)
+                for _ in range(40):
+                    if sta.isconnected():
+                        break
+                    print(".", end="")
+                    time.sleep(0.5)
+                print()
+        except OSError as e:
+            print("Wi-Fi error:", repr(e))
+        if sta.isconnected():
+            ap.active(False)  # the AP survives a soft reboot, so switch it off explicitly
+            ip = sta.ifconfig()[0]
+            print("Connected: http://{}/  (or http://{}.local/)".format(ip, HOSTNAME))
+            return ip
+        print("Could not join", WIFI_SSID, "- starting access point instead")
+
+    sta.active(False)
+    ap.active(True)
+    ap.config(essid=AP_SSID, password=AP_PASSWORD, authmode=3)  # WPA2
+    while not ap.active():
+        time.sleep_ms(100)
+    # AP mode defaults to 192.168.4.1 (ESP-IDF default); read it instead of assuming
+    ip = ap.ifconfig()[0]
+    print("Access point '{}' up: http://{}/".format(AP_SSID, ip))
+    return ip
+
+IP = connect_wifi()
 
 # --- 5. Web UI ---
 # The page is a separate file on flash (upload brachio-web-15.html as index.html).
@@ -538,8 +596,8 @@ async def main():
         print("Server start failed:", repr(e), "- press RESET / power-cycle")
         update_oled("NO SERVER", "PRESS RST", str(e))
         return
-    print(REVISION, "Server Running on http://%s/" % AP_IP)
-    update_oled(REVISION, "READY", AP_IP)
+    print(REVISION, "Server Running on http://%s/" % IP)
+    update_oled(REVISION, "READY", IP)
     await oled_task()
 
 asyncio.run(main())
