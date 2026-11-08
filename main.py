@@ -144,7 +144,7 @@ config = {
     "s1_slope": -10.0,
     "s2_pw": 1500,
     "s2_ang": 90.0,
-    "s2_slope": 10.0,
+    "s2_slope": -10.0,   # elbow servo on the upper arm (3D-printed arms); +10 with it on the lower arm
     "s1_hyst": 0.0,      # hysteresis correction (us), see set_hardware
     "s2_hyst": 0.0,
     "pen_up": 1450,
@@ -192,8 +192,13 @@ def set_raw_us(pw1, pw2, pw3):
 PEN_SETTLE_MS = 150
 
 # Last commanded position, so tests can restore it and the web UI can stay in sync
-# Last commanded position, so tests can restore it and the web UI can stay in sync
-state = {"s": -45.0, "e": 90.0, "pen": False}
+# Park: power on, end of every plot, and the pose to mount the arms in. At the
+# calibration's park angles both arm servos get their park pulse (s1_pw, s2_pw),
+# so the arm parks where it was mounted however the calibration changes.
+def park():
+    return config["s1_ang"], config["s2_ang"]
+
+state = {"s": config["s1_ang"], "e": config["s2_ang"], "pen": False}
 
 # Hysteresis correction (as in the original BrachioGraph): servo gears have some
 # slack, so a joint stops short depending on the direction it came from. Adding
@@ -233,14 +238,17 @@ async def next_frame():
     _next_frame = time.ticks_add(_next_frame, FRAME_MS)
     await asyncio.sleep_ms(time.ticks_diff(_next_frame, now))
 
-# Travel moves and jogs glide in GLIDE_STEP_DEG steps per frame (~100 deg/s)
-GLIDE_STEP_DEG = 2.0
+# Travel moves and jogs glide at GLIDE_STEP_DEG per frame on average (~50 deg/s),
+# ramped up from standstill and back down. Abrupt full-speed starts and stops made
+# 80 mm 3D-printed arms overshoot the target and swing back.
+GLIDE_STEP_DEG = 1.0
 
 async def glide(sh_deg, el_deg):
     s0, e0 = state["s"], state["e"]
     steps = max(1, math.ceil(max(abs(sh_deg - s0), abs(el_deg - e0)) / GLIDE_STEP_DEG))
     for i in range(1, steps + 1):
         f = i / steps
+        f = f * f * (3 - 2 * f)  # smoothstep: zero speed at both ends, peak 1.5x average
         set_hardware(s0 + (sh_deg - s0) * f, e0 + (el_deg - e0) * f, state["pen"])
         await next_frame()
 
@@ -275,11 +283,11 @@ def inverse_kinematics(x, y):
 
 pos = {"x": None, "y": None}  # last G-code position in mm, None if unknown
 
-async def line_to(x, y):
-    # Straight pen-down line at config["speed"]: one small step per servo frame.
+async def line_to(x, y, pen=True):
+    # Straight line at config["speed"]: one small step per servo frame.
     # (Moving the joints directly between two far points would draw an arc.)
     x0, y0 = pos["x"], pos["y"]
-    if not state["pen"]:
+    if pen and not state["pen"]:
         set_hardware(state["s"], state["e"], True)  # pen down at the start point
         await asyncio.sleep_ms(PEN_SETTLE_MS)
     step = max(0.05, config["speed"] * FRAME_MS / 1000)
@@ -288,8 +296,23 @@ async def line_to(x, y):
         f = i / steps
         a = inverse_kinematics(x0 + (x - x0) * f, y0 + (y - y0) * f)
         if a:
-            set_hardware(a[0], a[1], True)
+            set_hardware(a[0], a[1], pen)
             await next_frame()
+    pos["x"], pos["y"] = x, y
+
+def forward_kinematics(sh_deg, el_deg):
+    # (shoulder_deg, elbow_deg) -> pen position (mm), the inverse of inverse_kinematics
+    s, se = math.radians(sh_deg), math.radians(sh_deg + el_deg)
+    return (config["L1"] * math.sin(s) + config["L2"] * math.sin(se),
+            config["L1"] * math.cos(s) + config["L2"] * math.cos(se))
+
+async def go_park():
+    # Pen up, then a straight line to park at drawing speed instead of a fast joint glide
+    await move_to(state["s"], state["e"], False)
+    if pos["x"] is not None:
+        await line_to(*forward_kinematics(*park()), pen=False)
+    await move_to(*park(), False)
+    pos["x"] = pos["y"] = None
 
 async def execute_gcode(line):
     parts = line.strip().split()
@@ -348,11 +371,12 @@ async def run_job():
                     last_oled = time.ticks_ms()
                     pct = job["line"] * 100 // max(1, job["total"])
                     update_oled("PLOTTING", "%d/%d" % (job["line"], job["total"]), "%d%%" % pct)
-        job["state"] = "stopped" if job["stop"] else "done"
+        final = "stopped" if job["stop"] else "done"
     except Exception as e:
         print("Job error:", repr(e))
-        job["state"] = "error"
-    await move_to(state["s"], state["e"], False)
+        final = "error"
+    await go_park()  # still "running": motion commands stay blocked until parked
+    job["state"] = final
     update_oled(REVISION, job["state"].upper(), "%d/%d" % (job["line"], job["total"]))
 
 # --- 4. Wi-Fi ---
@@ -432,7 +456,7 @@ WEB_FILE = "index.html"
 web_buf = bytearray(1024)  # reused for every page request
 
 # --- 6. Async Server Loop ---
-MOTION_CMDS = ("G0", "G1", "ANG", "TEST_SHOULDER", "TEST_ELBOW", "TEST_PEN", "DONE")
+MOTION_CMDS = ("G0", "G1", "ANG", "PARK", "TEST_SHOULDER", "TEST_ELBOW", "TEST_PEN", "DONE")
 MAX_CHUNK = 8192
 
 async def handle_cmd(cmd_text, progress):
@@ -527,6 +551,10 @@ async def handle_cmd(cmd_text, progress):
         save_config()
         restore_hardware()  # apply new calibration to the current position
         update_oled("CONFIG", "SAVED")
+
+    elif cmd_text == "PARK":
+        await go_park()
+        update_oled(REVISION, "PARKED")
 
     elif cmd_text == "DONE":
         await move_to(state["s"], state["e"], False)
@@ -644,7 +672,7 @@ async def handle_client(reader, writer):
         await writer.wait_closed()
 
 async def main():
-    set_hardware(-45, 90, False)
+    set_hardware(*park(), False)
     try:
         server = await asyncio.start_server(handle_client, "0.0.0.0", 80)
     except OSError as e:

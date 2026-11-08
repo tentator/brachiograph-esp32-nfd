@@ -56,6 +56,7 @@
   </div>
   <div class="btn-row">
     <button class="warn" onclick="centerBed()">Bed Center (-45°, 90°)</button>
+    <button class="warn" onclick="park()">Park</button>
     <button class="alt" onclick="sendCmd('TEST_OLED')">Refresh OLED</button>
   </div>
 
@@ -119,7 +120,7 @@
     <div>S1 Park: <input class="cfg" type="number" id="s1_ang" value="-90.0" step="1"></div>
     <div>S2 Park: <input class="cfg" type="number" id="s2_ang" value="90.0" step="1"></div>
     <div>S1 Slope: <input class="cfg" type="number" id="s1_slope" value="-10.0" step="0.5"></div>
-    <div>S2 Slope: <input class="cfg" type="number" id="s2_slope" value="10.0" step="0.5"></div>
+    <div>S2 Slope: <input class="cfg" type="number" id="s2_slope" value="-10.0" step="0.5"></div>
     <div>Pen Up (us): <input class="cfg" type="number" id="pen_up" value="1450" step="10"></div>
     <div>Pen Down (us): <input class="cfg" type="number" id="pen_down" value="1850" step="10"></div>
   </div>
@@ -213,6 +214,11 @@ async function centerBed() {
   currentS = -45; currentE = 90;
   updateReadout();
   await sendCmd('ANG S=-45 E=90 P=0');
+}
+
+// Park: where the arm starts, ends every plot and is mounted
+async function park() {
+  await sendCmd('PARK');
 }
 
 async function jog(axis, delta) {
