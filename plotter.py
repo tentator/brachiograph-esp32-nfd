@@ -6,7 +6,7 @@ import json
 import os
 from machine import Pin, PWM, I2C, SoftI2C
 import ssd1306
-from rescue import event, connect, wifi_watch, recv, read_request, handle_update, servo_pins
+from rescue import custom, event, connect, wifi_watch, recv, read_request, handle_update, servo_pins
 
 REVISION = "REV 15.0"
 
@@ -125,7 +125,8 @@ config = {
     "bed_minx": -50.0,   # drawing area (mm), used by the web page
     "bed_maxx": 50.0,
     "bed_miny": 80.0,
-    "bed_maxy": 150.0
+    "bed_maxy": 150.0,
+    "flip": 0.0          # 1: drawings turned 180 deg for someone facing the robot from the paper side
 }
 
 # Calibration survives reboots in config.json on the board's flash
@@ -369,7 +370,7 @@ async def run_job():
     update_oled(REVISION, job["state"].upper(), "%d/%d" % (job["line"], job["total"]))
 
 # --- 4. Wi-Fi: rescue.py ---
-IP, JOINED = connect(lambda *lines: update_oled(*lines))
+IP = connect(lambda *lines: update_oled(*lines))
 
 # --- 5. Web UI ---
 # The page is a separate file on flash (upload index.html).
@@ -575,7 +576,7 @@ async def main():
         return
     print(REVISION, "Server Running on http://%s/" % IP)
     update_oled(REVISION, "READY", IP)
-    if JOINED:
+    if custom.get("networks"):
         asyncio.create_task(wifi_watch())
     try:
         await oled_task()

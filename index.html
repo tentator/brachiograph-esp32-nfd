@@ -139,6 +139,8 @@
     <div>Area X max: <input class="cfg" type="number" id="bed_maxx" value="50" step="1"></div>
     <div>Area Y min: <input class="cfg" type="number" id="bed_miny" value="80" step="1"></div>
     <div>Area Y max: <input class="cfg" type="number" id="bed_maxy" value="150" step="1"></div>
+    <div>View: <select class="cfg" id="flip"><option value="0">from behind the robot</option>
+      <option value="1">from the paper side</option></select></div>
   </div>
   <div class="btn-row">
     <button class="alt" onclick="autoFitBed()">Auto-fit Area to Arms</button>
@@ -162,8 +164,9 @@ function updateReadout() {
   readout.innerText = `S: ${currentS}° | E: ${currentE}° | Pen: ${penDown ? "DOWN" : "UP"}`;
 }
 
-function toCanvasX(x) { return ((x - BED.minX) / (BED.maxX - BED.minX)) * canvas.width; }
-function toCanvasY(y) { return canvas.height - (((y - BED.minY) / (BED.maxY - BED.minY)) * canvas.height); }
+// Seen from the paper side (flip) the bed is turned 180°, so the preview turns with it
+function toCanvasX(x) { return ((boardCfg.flip == 1 ? BED.maxX - x : x - BED.minX) / (BED.maxX - BED.minX)) * canvas.width; }
+function toCanvasY(y) { return canvas.height - (((boardCfg.flip == 1 ? BED.maxY - y : y - BED.minY) / (BED.maxY - BED.minY)) * canvas.height); }
 
 function resetCanvas() {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -229,9 +232,8 @@ async function jog(axis, delta) {
 }
 
 async function togglePen() {
-  penDown = !penDown;
-  updateReadout();
-  await sendCmd(`ANG S=${currentS} E=${currentE} P=${penDown ? 1 : 0}`);
+  // Pen only: the board keeps the arm where it is
+  await sendCmd(`ANG P=${penDown ? 0 : 1}`);
 }
 
 async function applyConfig() {
@@ -324,6 +326,9 @@ async function stopJob() {
 // The page is a static file, so the revision badge comes from the board.
 getStatus().then(st => {
   if (!st) return;
+  // Start from where the arm really is, not from a guess: jogs and the pen move from here
+  currentS = Math.round(st.s); currentE = Math.round(st.e); penDown = st.p === 1;
+  updateReadout();
   document.getElementById('rev').innerText = st.rev;
   document.title = 'Plotter ' + st.rev;
   if (st.job === 'running' || st.job === 'paused') pollStatus();
@@ -514,9 +519,11 @@ function buildQueue(sampled, minX, maxX, minY, maxY, opts = {}) {
   const bcX = (BED.minX + BED.maxX)/2, bcY = (BED.minY + BED.maxY)/2;
   // Source y points down (SVG/images), bed y points up. Rotated = 90° clockwise:
   // the top of the drawing ends up on the right.
-  const toBed = rotate
+  const fit = rotate
     ? p => [bcX - (p.y - cY) * scale, bcY - (p.x - cX) * scale]
     : p => [bcX + (p.x - cX) * scale, bcY - (p.y - cY) * scale];
+  // Seen from the paper side the drawing is turned 180° around the area's centre
+  const toBed = boardCfg.flip == 1 ? p => { const [x, y] = fit(p); return [2 * bcX - x, 2 * bcY - y]; } : fit;
 
   motionQueue = [];
   resetCanvas();

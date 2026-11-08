@@ -165,7 +165,9 @@ If `plotter.py` fails to start (a bad update), `main.py` starts the rescue serve
 `rescue.py` instead: Wi-Fi and updates keep working, every page answers 503 and `GET /log`
 shows the error, so a fixed `plotter.py` can be uploaded over Wi-Fi. Only a broken `main.py`
 or `rescue.py` needs USB; both are small and rarely change.
-Joined to a network, the board checks it every 10 s and rejoins when it drops. `GET /log`
+Joined to a network, the board checks it every 10 s and rejoins when it drops; it waits up to
+30 s per network. Running its own access point because no network could be joined, it tries
+the networks every 60 s and switches the access point off as soon as one works. `GET /log`
 shows the last Wi-Fi and update events (seconds since boot).
 
 ### The OLED
@@ -274,6 +276,7 @@ pulse_us = park_pw + (angle_deg − park_angle) × slope
 | S1 / S2 Hysteresis | `s1_hyst`, `s2_hyst` | 0 | Backlash correction in µs (see below) |
 | Inner / Outer arm | `L1`, `L2` | 80 / 80 | Arm lengths in mm, pivot to pivot (outer: elbow to pen tip) |
 | Area X/Y min/max | `bed_minx` … `bed_maxy` | −50, 50, 80, 150 | Drawing area in mm |
+| View | `flip` | 0 | 1 turns every drawing 180° for someone facing the robot from the paper side (the preview turns with it) |
 
 Angles: shoulder 0° = arm pointing straight ahead (+Y), negative = to the left. The elbow angle
 is measured relative to the inner arm (0° = straight, 90° = right angle).
@@ -486,7 +489,7 @@ All on port 80. Every response closes the connection.
 | `POST /job` body = G-code lines | Appends to the job being uploaded (max 8 KB per request) |
 | `PUT /file/<name>`, basic auth `ota:<ota_password>` | Writes the file to flash (`<name>.tmp`, then renamed) |
 | `POST /reset`, basic auth `ota:<ota_password>` | Restarts the board |
-| `GET /log` | Last Wi-Fi and update events, one per line, seconds since boot first |
+| `GET /log` | Boot (with `machine.reset_cause()`: 1 power on, 2 reset button or `/reset`, 3 watchdog, 5 soft reset), Wi-Fi, update and error events, one per line, seconds since boot first; kept in flash (`log.txt`, rotated to `log.old` at 8 KB) |
 
 Commands for `POST /cmd`:
 

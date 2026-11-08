@@ -118,9 +118,11 @@ At the bottom of the web page, under *Live Calibration*:
    (elbow).
 2. With the buttons under *Safe Nudge Controls (±5°)*, check that 5° on the
    screen is 5° on the arm; if not, change *S1 Slope* or *S2 Slope*.
-3. Set *Pen Up* so the pen clears the paper, and *Pen Down* so it rests
+3. Under *Arms and Drawing Area*, set *View* to *from the paper side*, so drawings
+   are the right way up for you.
+4. Set *Pen Up* so the pen clears the paper, and *Pen Down* so it rests
    lightly on it.
-4. Press *Apply Config* and draw the test square with *Draw Test Square*: its
+5. Press *Apply Config* and draw the test square with *Draw Test Square*: its
    sides should be straight.
 
 ## 8. Draw

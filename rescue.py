@@ -26,14 +26,24 @@ def servo_pins():
     pins.update(custom.get("pins", {}))
     return pins["shoulder"], pins["elbow"], pins["pen"]
 
-events = []  # last Wi-Fi and update events, served at /log
+# Wi-Fi, update and error events with seconds since boot, served at /log. Kept in flash,
+# so after a hang and a power cycle the log still shows what happened before it.
+LOG, LOG_OLD, LOG_MAX = "log.txt", "log.old", 8192
 
 def event(msg):
-    line = "%d %s" % (time.ticks_ms() // 1000, msg)
-    print(line)
-    events.append(line)
-    if len(events) > 30:
-        events.pop(0)
+    line = "%d %s\n" % (time.ticks_ms() // 1000, msg)
+    print(line, end="")
+    try:
+        if os.stat(LOG)[6] > LOG_MAX:
+            os.rename(LOG, LOG_OLD)
+    except OSError:
+        pass  # no log yet
+    with open(LOG, "a") as f:
+        f.write(line)
+
+event("boot, reset cause %d" % machine.reset_cause())
+
+JOIN_TIMEOUT_S = 30  # 15 s was too short on a weak signal: the board fell back to its own AP
 
 def join_wifi(networks, show):
     sta = network.WLAN(network.STA_IF)
@@ -45,7 +55,7 @@ def join_wifi(networks, show):
             continue
         show("WIFI", n["ssid"])
         sta.connect(n["ssid"], n["password"])
-        for _ in range(150):
+        for _ in range(JOIN_TIMEOUT_S * 10):
             if sta.isconnected():
                 event("joined %s rssi %d IP %s" % (n["ssid"], sta.status("rssi"), sta.ifconfig()[0]))
                 return sta.ifconfig()[0]
@@ -67,41 +77,43 @@ def start_ap(ssid, password):
 
 def connect(show=print):
     # Joins the first network from customization.json that is in range, otherwise opens
-    # the board's own access point. Returns (IP, joined).
+    # the board's own access point. Returns the board's IP.
     sta = network.WLAN(network.STA_IF)
     if sta.isconnected():
-        return sta.ifconfig()[0], True
+        return sta.ifconfig()[0]
     if "hostname" in custom:
         network.hostname(custom["hostname"])  # before any interface is active
-    ip = custom.get("networks") and join_wifi(custom["networks"], show)
-    if ip:
-        return ip, True
     ap = custom.get("ap", {})
-    return start_ap(ap.get("ssid", "ESP32-Plotter"), ap.get("password", "plotterpassword")), False
+    return (custom.get("networks") and join_wifi(custom["networks"], show)) or \
+        start_ap(ap.get("ssid", "ESP32-Plotter"), ap.get("password", "plotterpassword"))
 
 async def wifi_watch():
-    # Rejoin when the connection drops; until then the board is unreachable
-    sta = network.WLAN(network.STA_IF)
+    # Rejoin when the connection drops, and leave the fallback access point as soon as a
+    # network from customization.json can be joined; until then the board is unreachable
+    sta, ap = network.WLAN(network.STA_IF), network.WLAN(network.AP_IF)
     while True:
-        await asyncio.sleep(10)
+        await asyncio.sleep(60 if ap.active() else 10)
         if sta.isconnected():
             continue
         if sta.status() == network.STAT_CONNECTING:
             event("Wi-Fi lost, reconnecting")  # the Wi-Fi stack retries by itself
             continue
-        event("Wi-Fi lost, status %d" % sta.status())
+        if not ap.active():
+            event("Wi-Fi lost, status %d" % sta.status())
+        sta.active(True)
         for n in custom["networks"]:
             try:
                 sta.connect(n["ssid"], n["password"])
             except OSError as e:
                 event("connect %s: %r" % (n["ssid"], e))
                 continue
-            for _ in range(150):
+            for _ in range(JOIN_TIMEOUT_S * 10):
                 await asyncio.sleep_ms(100)
                 if sta.isconnected():
                     break
             if sta.isconnected():
-                event("rejoined %s rssi %d" % (n["ssid"], sta.status("rssi")))
+                event("rejoined %s rssi %d IP %s" % (n["ssid"], sta.status("rssi"), sta.ifconfig()[0]))
+                ap.active(False)
                 break
             sta.disconnect()
 
@@ -168,7 +180,12 @@ async def handle_update(req, reader, writer, length, auth):
         asyncio.create_task(reset_soon())
     elif req.startswith("GET /log "):
         writer.write(b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\n")
-        writer.write("\n".join(events).encode())
+        for name in (LOG_OLD, LOG):
+            try:
+                with open(name, "rb") as f:
+                    writer.write(f.read())
+            except OSError:
+                pass  # not written yet
     else:
         return False
     return True
@@ -192,10 +209,10 @@ def serve(error):
             await writer.wait_closed()
 
     async def run():
-        ip, joined = connect()
+        ip = connect()
         await asyncio.start_server(client, "0.0.0.0", 80)
         event("rescue server on http://%s/" % ip)
-        if joined:
+        if custom.get("networks"):
             asyncio.create_task(wifi_watch())
         while True:
             await asyncio.sleep(3600)
