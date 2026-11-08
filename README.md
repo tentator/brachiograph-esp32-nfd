@@ -1,18 +1,11 @@
 # BrachioGraph: a drawing robot with an ESP32
 
-A robot arm with two joints holds a pen and draws what you send it from your
-phone: pictures, photos or text. This guide takes you from plugging it
+A robot arm with two joints holds a pen and draws what you send it from a
+browser: pictures, photos or text. This guide takes you from plugging it
 together to your first drawing.
 
-## What you need
-
-- ESP32 DevKit (30 pins) and a USB cable to the computer
-- 3 servos: shoulder, elbow, pen
-- 3D-printed base plate and 2 arms of 80 mm, the elbow servo sits on the upper arm
-- Pen
-- Breadboard, jumper wires, 1000 µF capacitor
-- USB power supply, 5 V, at least 2 A
-- Linux computer
+Everything you need, with how many of each and the files to 3D-print, is in
+[PARTS.md](PARTS.md).
 
 ## 1. Get the repository
 
@@ -37,16 +30,16 @@ Open `customization.json` and fill in:
 
 - `hostname`: your robot's name
 - `networks`: the Wi-Fi networks it should join, the most important first
-- `ap`: name and password (at least 8 characters) of the robot's own Wi-Fi,
-  which it opens when it finds none of the others
+- `ota_password`: a password of your choice for updates over Wi-Fi
 
 `customization.json` holds passwords and stays on your computer: Git never uploads it.
 
 ## 3. Connect the ESP32
 
-Plug the USB cable into the ESP32 and into the computer.
+Push the ESP32 into the breadboard across the middle gap, then plug the USB-C
+cable into the ESP32 and into the computer.
 
-![ESP32 on the USB cable](images/esp32-usb.jpg)
+![ESP32 on the breadboard, USB-C cable to the computer](images/flash.png)
 
 ## 4. Flash the program
 
@@ -56,30 +49,47 @@ Plug the USB cable into the ESP32 and into the computer.
 
 It downloads MicroPython, puts it on the ESP32, then copies the drawing
 program, the web page and your `customization.json`. If your ESP32 is not on
-`/dev/ttyUSB0`, give its port: `./flash.sh /dev/ttyUSB1`. Later, without the
+`/dev/ttyACM0`, give its port: `./flash.sh /dev/ttyACM1`. Later, without the
 USB cable, the same command updates the robot over Wi-Fi.
 
-## 5. Wire it up
+## 5. Build the robot
 
-![Wiring (placeholder)](images/wiring_placeholder.png)
+1. Press the breadboard into its place on the base.
+2. Put the shoulder servo into the base, its shaft at the top.
+3. Put the elbow servo into the end of the upper arm.
+4. Put the pen-lift servo into the lower arm.
+5. Wrap the rubber band around the lower arm: it holds the pen.
+6. Press a servo horn into each arm: into the upper arm where it meets the
+   shoulder servo, into the lower arm where it meets the elbow servo.
 
-TODO: this placeholder shows the ESP32-C3 board; replace it with the ESP32 DevKit
-wiring below.
+Don't put the arms onto the servos yet: that comes in step 7, with the robot
+switched on.
 
-Unplug the USB cable first. The servos get their power from the ESP32's `VIN`
+TODO: photo of the base with breadboard and shoulder servo, and of both arms
+with their servos, horns and rubber band.
+
+## 6. Wire it up
+
+Unplug the USB cable first. The servos get their power from the ESP32's `5V`
 pin; the capacitor absorbs their current spikes.
 
-| Wire | From the ESP32 | To |
+![Wiring](images/wiring.png)
+
+| Wire colour | From | To |
 |---|---|---|
-| Shoulder signal | `D25` | shoulder servo, yellow |
-| Elbow signal | `D26` | elbow servo, yellow |
-| Pen signal | `D27` | pen servo, yellow |
-| +5 V | `VIN` | all servos, red, and capacitor + |
-| Ground | `GND` | all servos, brown, and capacitor − (marked side) |
+| Black | ESP32 `GND` | breadboard column 2, lower half; from there each servo's ground and the capacitor's − (marked side) |
+| Red | ESP32 `5V` | breadboard column 2, upper half; from there each servo's + and the capacitor's + |
+| Green | ESP32 `0` | shoulder servo signal |
+| Yellow | ESP32 `1` | elbow servo signal |
+| White | ESP32 `3` | pen servo signal |
 
-Then plug the USB power supply into the ESP32.
+Each servo's own cable is brown (−), red (+) and yellow (signal). Plug it into
+the jumper wires halfway: brown to black, red to red, yellow to the servo's
+signal colour.
 
-## 6. Mount the arms
+Then plug the USB-C power supply into the ESP32.
+
+## 7. Mount the arms
 
 Plug in the USB power supply: both arm servos turn to their middle position
 and the pen servo lifts. This is the park position: the robot goes there when
@@ -109,24 +119,33 @@ below it:
 
 Don't turn the servos by hand while they are powered.
 
-## 7. Calibrate
+## 8. Tidy the cables
 
-At the bottom of the web page, under *Live Calibration*:
+Run the elbow and pen servo cables along the arms and fix them with cable
+ties. Leave enough slack at the shoulder and at the elbow, so the arms can
+turn all the way without pulling on a cable.
 
-1. Press *Bed Center*: the upper arm points 45° to the left, the lower arm is
-   at a right angle to it. If not, adjust *S1 Park* (shoulder) and *S2 Park*
-   (elbow).
-2. With the buttons under *Safe Nudge Controls (±5°)*, check that 5° on the
-   screen is 5° on the arm; if not, change *S1 Slope* or *S2 Slope*.
-3. Under *Arms and Drawing Area*, set *View* to *from the paper side*, so drawings
-   are the right way up for you.
-4. Set *Pen Up* so the pen clears the paper, and *Pen Down* so it rests
-   lightly on it.
-5. Press *Apply Config* and draw the test square with *Draw Test Square*: its
-   sides should be straight.
+TODO: photo of the finished robot, wired and ready for calibration.
 
-## 8. Draw
+## 9. Connect
 
-On the web page, pick a picture (SVG), a photo or a text, check the preview
-and press *Plot Drawing*. The robot keeps drawing on its own, even when the
-phone sleeps.
+Put your laptop on the same Wi-Fi as the robot, open a browser and go to
+`http://<hostname>.local` with the `hostname` from your `customization.json`,
+for example `http://node11.local`. Type the `http://` too. The robot's page
+opens.
+
+## 10. Calibrate
+
+On the robot's page:
+
+1. Under *Arms and Drawing Area*, set *View* to *from the paper side*, so
+   drawings come out the right way up for you.
+2. Under *Live Calibration*, set *Pen Up* so the pen clears the paper and
+   *Pen Down* so it rests lightly on it; try them with *Toggle Pen*.
+3. Press *Apply Config*, then *Draw Test Square*: its sides should be straight.
+
+## 11. Draw
+
+Pick a picture (SVG), a photo or a text, check the preview and press
+*Plot Drawing*. The robot keeps drawing on its own, even if you close the
+browser.

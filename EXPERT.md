@@ -38,6 +38,9 @@ Current version: **`plotter.py`** (REV 15.0) with its web page **`index.html`**,
 | Pen-lift servo | GPIO **3** | GPIO **27** |
 | OLED SSD1306 72x40 (on board) | I2C SDA = GPIO **5**, SCL = GPIO **6**, address 0x3C (0x3D also detected) | none |
 
+Wire colours used in the README's wiring diagram (`images/wiring.png`, drawn by
+`images/draw.py`): black GND, red +5 V, green shoulder, yellow elbow, white pen.
+
 The script picks the column from the chip it runs on; `"pins"` in `customization.json`
 overrides single servo pins, e.g. `"pins": {"shoulder": 4}`.
 

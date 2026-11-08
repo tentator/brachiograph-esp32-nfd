@@ -8,13 +8,18 @@ files="rescue.py plotter.py ssd1306.py index.html customization.json main.py"  #
 [[ -f customization.json ]] || { echo "customization.json missing: cp customization.example.json customization.json and fill it in" >&2; exit 1; }
 python3 -c "import json; json.load(open('customization.json'))" || { echo "customization.json is not valid JSON, see the error above" >&2; exit 1; }
 get() { python3 -c "import json, sys; print(json.load(open('customization.json')).get(sys.argv[1], ''))" "$1"; }
-target=${1:-/dev/ttyUSB0}
+# ESP32-C3 boards show up as /dev/ttyACM0, classic ESP32 boards with a USB-serial chip as /dev/ttyUSB0
+target=${1:-$(ls /dev/ttyACM0 /dev/ttyUSB0 2>/dev/null | head -1)}
 
-if [[ -e $target ]]; then
-  fw=ESP32_GENERIC-20260824-v1.29.0.bin
+if [[ -n $target && -e $target ]]; then
+  if esptool --port "$target" chip-id | grep -q "ESP32-C3"; then
+    chip=esp32c3 fw=ESP32_GENERIC_C3-20260824-v1.29.0.bin offset=0x0
+  else
+    chip=esp32 fw=ESP32_GENERIC-20260824-v1.29.0.bin offset=0x1000
+  fi
   [[ -f $fw ]] || curl -fLO "https://micropython.org/resources/firmware/$fw"
-  esptool --chip esp32 --port "$target" erase-flash
-  esptool --chip esp32 --port "$target" --baud 460800 write-flash 0x1000 "$fw"
+  esptool --chip $chip --port "$target" erase-flash
+  esptool --chip $chip --port "$target" --baud 460800 write-flash $offset "$fw"
   echo "Waiting for MicroPython's first-boot setup..."
   for try in $(seq 1 10); do
     mpremote connect "$target" exec pass >/dev/null 2>&1 && break
@@ -24,7 +29,7 @@ if [[ -e $target ]]; then
 else
   host=${1:-$(get hostname).local}
   pw=$(get ota_password)
-  [[ -n $pw ]] || { echo "No USB on $target, and no ota_password in customization.json for Wi-Fi" >&2; exit 1; }
+  [[ -n $pw ]] || { echo "No ESP32 on USB, and no ota_password in customization.json for Wi-Fi" >&2; exit 1; }
   echo "Updating $host over Wi-Fi"
   for f in $files; do
     for try in 1 2 3; do
