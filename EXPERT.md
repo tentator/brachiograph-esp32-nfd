@@ -5,10 +5,10 @@ to an **ESP32-C3 board with a built-in 0.42" 72x40 OLED**. The ESP32 runs its ow
 access point and serves a web page; everything heavy (SVG parsing, image-to-line conversion,
 path planning) happens in your browser. The finished drawing is uploaded to the board as
 simple `G0`/`G1` commands and the board plots it on its own, so the phone can sleep or
-disconnect meanwhile.
+disconnect meanwhile. It also runs on a classic ESP32 DevKit (no OLED), and can join an
+existing Wi-Fi instead of opening its own.
 
-Current version: **`brachio-codez-oled-15.py`** (REV 15.0) with its web page
-**`brachio-web-15.html`**
+Current version: **`main.py`** (REV 15.0) with its web page **`index.html`**
 
 ---
 
@@ -30,12 +30,15 @@ Current version: **`brachio-codez-oled-15.py`** (REV 15.0) with its web page
 
 ## Hardware
 
-| Part | Connection |
-|---|---|
-| Shoulder servo (inner arm) | GPIO **0** |
-| Elbow servo (outer arm) | GPIO **1** |
-| Pen-lift servo | GPIO **3** |
-| OLED SSD1306 72x40 (on board) | I2C SDA = GPIO **5**, SCL = GPIO **6**, address 0x3C (0x3D also detected) |
+| Part | ESP32-C3 OLED board | Classic ESP32 DevKit |
+|---|---|---|
+| Shoulder servo (inner arm) | GPIO **0** | GPIO **25** |
+| Elbow servo (outer arm) | GPIO **1** | GPIO **26** |
+| Pen-lift servo | GPIO **3** | GPIO **27** |
+| OLED SSD1306 72x40 (on board) | I2C SDA = GPIO **5**, SCL = GPIO **6**, address 0x3C (0x3D also detected) | none |
+
+The script picks the column from the chip it runs on; `"pins"` in `customization.json`
+overrides single servo pins, e.g. `"pins": {"shoulder": 4}`.
 
 - Arms: inner `L1` = 80 mm, outer `L2` = 80 mm by default; set your lengths in the web page
   (see [Arms and drawing area](#arms-and-drawing-area)).
@@ -44,7 +47,7 @@ Current version: **`brachio-codez-oled-15.py`** (REV 15.0) with its web page
 - **Power the servos from a separate 5 V supply** (common ground with the ESP32). Three servos
   starting together can draw over 1 A; powered from the board they cause brownouts, resets and
   OLED glitches.
-- If GPIO 0 ever stops working, change `PIN_SHOULDER` to 4.
+- If GPIO 0 ever stops working, set `"pins": {"shoulder": 4}` in `customization.json`.
 
 The arm geometry and drawing area follow the original BrachioGraph: the shoulder is at (0, 0),
 the paper lies in front of it, and the default drawing area is X −50…50 mm, Y 80…150 mm
@@ -56,7 +59,9 @@ the paper lies in front of it, and the default drawing area is X −50…50 mm, 
 
 ### 1. Flash MicroPython (only once)
 
-The firmware `ESP32_GENERIC_C3-20260824-v1.29.0.bin` is in this folder. With
+Download the firmware from [micropython.org](https://micropython.org/download/):
+[ESP32_GENERIC_C3](https://micropython.org/download/ESP32_GENERIC_C3/) for the C3 board,
+[ESP32_GENERIC](https://micropython.org/download/ESP32_GENERIC/) for a classic ESP32. With
 [esptool](https://docs.espressif.com/projects/esptool/) (`pip install esptool`):
 
 ```sh
@@ -64,6 +69,7 @@ esptool.py --chip esp32c3 --port /dev/ttyACM0 erase_flash
 esptool.py --chip esp32c3 --port /dev/ttyACM0 write_flash -z 0x0 ESP32_GENERIC_C3-20260824-v1.29.0.bin
 ```
 
+On a classic ESP32 use `--chip esp32`, its port (often `/dev/ttyUSB0`) and offset `0x1000`.
 (On the C3 the firmware goes to offset `0x0`. If the port isn't found, hold BOOT while
 plugging in the board.) Thonny can do the same via *Tools → Options → Interpreter → Install or
 update MicroPython*.
@@ -75,8 +81,8 @@ Three files are needed on the board:
 | On your computer | On the board |
 |---|---|
 | `ssd1306.py` | `ssd1306.py` |
-| `brachio-codez-oled-15.py` | `main.py` (runs automatically at boot) |
-| `brachio-web-15.html` | `index.html` (the web page) |
+| `main.py` | `main.py` (runs automatically at boot) |
+| `index.html` | `index.html` (the web page) |
 
 The web page is a separate file because the ESP32-C3 has little RAM: MicroPython compiles the
 whole script in memory before running it, and with the page embedded as a string (REV 11) the
@@ -88,9 +94,11 @@ With Thonny: open the file, *File → Save as… → MicroPython device*. Or wit
 
 ```sh
 mpremote cp ssd1306.py :ssd1306.py
-mpremote cp brachio-codez-oled-15.py :main.py
-mpremote cp brachio-web-15.html :index.html
+mpremote cp main.py :main.py
+mpremote cp index.html :index.html
 ```
+
+Optionally a `customization.json` (see [Wi-Fi](#wi-fi)): `mpremote cp customization.json :customization.json`.
 
 Two more files appear on the board by themselves:
 
@@ -119,7 +127,7 @@ RESET or power-cycle the board.
 Then:
 
 1. Connect your phone or laptop to the Wi-Fi **`ESP32-Plotter`**, password
-   **`plotterpassword`** (change both in section 4 of the script).
+   **`plotterpassword`** (or the network and name from your `customization.json`, see [Wi-Fi](#wi-fi)).
 2. Open **`http://192.168.4.1`**. Type the `http://`, as browsers otherwise try https.
    On phones, turn mobile data off so the phone doesn't avoid a Wi-Fi network without internet.
 
@@ -131,6 +139,25 @@ the 9 characters that fit). To use a different address, add after `ap.active(Tru
 ```python
 ap.ifconfig(('192.168.10.1', '255.255.255.0', '192.168.10.1', '8.8.8.8'))
 ```
+
+### Wi-Fi
+
+Without a `customization.json` on the board it opens the access point above. With one, copied from
+[`customization.example.json`](customization.example.json), it sets its hostname, joins the first listed network
+that is in range, and opens the `ap` access point only if none is. `customization.json` holds passwords:
+it is in `.gitignore`, keep it out of the repository. Joined to a network, the board gets its
+address from that network's DHCP (shown on the OLED and in the shell); the hostname also works
+as `http://<hostname>.local` where mDNS is available.
+
+### Updates over Wi-Fi
+
+`./flash.sh` without the ESP32 on USB uploads `main.py`, `ssd1306.py`, `index.html` and
+`customization.json` over Wi-Fi and restarts the board; it needs an `ota_password` in `customization.json`, and
+the first version with this feature goes on by USB. `./flash.sh <host>` if `<hostname>.local`
+doesn't resolve. Each file is written to `<name>.tmp` and renamed only when complete, so a cut
+connection leaves the old file in place; a `main.py` that doesn't start needs USB again.
+Joined to a network, the board checks it every 10 s and rejoins when it drops. `GET /log`
+shows the last Wi-Fi and update events (seconds since boot).
 
 ### The OLED
 
@@ -232,7 +259,7 @@ pulse_us = park_pw + (angle_deg − park_angle) × slope
 | S1 Park | `s1_ang` | −90 | Shoulder angle (°) at which the shoulder servo gets `s1_pw` (1500 µs) |
 | S1 Slope | `s1_slope` | −10 | µs per degree for the shoulder (negative = mounted reversed) |
 | S2 Park | `s2_ang` | 90 | Elbow angle (°) at `s2_pw` (1500 µs) |
-| S2 Slope | `s2_slope` | 10 | µs per degree for the elbow |
+| S2 Slope | `s2_slope` | −10 | µs per degree for the elbow: negative with the elbow servo on the upper arm (3D-printed arms), positive with it on the lower arm (wooden arms) |
 | Pen Up / Pen Down | `pen_up`, `pen_down` | 1450 / 1850 | Pen servo pulse widths (µs) |
 | Speed | `speed` | 25 | Drawing speed in mm/s |
 | S1 / S2 Hysteresis | `s1_hyst`, `s2_hyst` | 0 | Backlash correction in µs (see below) |
@@ -262,7 +289,7 @@ editing the file. If you paste values from a Raspberry Pi BrachioGraph, the mapp
 ### Speed
 
 Lower is steadier: try 15–25 mm/s for drawings with fine detail, up to 40–50 mm/s for large
-simple shapes. Travel moves (pen up) aren't affected; they glide at about 100°/s.
+simple shapes. Travel moves (pen up) aren't affected; they glide at about 50°/s, ramped up and down.
 
 ### Hysteresis correction
 
@@ -404,7 +431,7 @@ SVG / image → polylines in mm
            ── JOB_START ────────────────────▶  plot task reads it line by line:
                                                  inverse kinematics (x,y → angles)
            ◀── GET /status once a second ───     G1: straight line, one step per 20 ms
-               (progress, pause, stop)           G0: pen up, glide in 2° steps
+               (progress, pause, stop)           G0: pen up, ramped glide
                                                  angles → hysteresis → pulse → PWM
 ```
 
@@ -425,8 +452,11 @@ SVG / image → polylines in mm
   shoulder = `asin(x/h) − acos((h² + L1² − L2²) / (2·h·L1))`,
   elbow = `π − acos((L1² + L2² − h²) / (2·L1·L2))`. Points beyond reach are clamped
   to the arm's maximum length.
-- **Gliding**: travel moves and jogs are split into 2° steps, one per frame (≈100°/s), instead
-  of jumping at full servo speed.
+- **Gliding**: travel moves and jogs are split into small steps, one per frame, instead of
+  jumping at full servo speed. The steps follow a ramp (smoothstep): speed rises from zero to
+  ≈75°/s and falls back to zero at the target, ≈50°/s on average. A constant 100°/s glide with
+  abrupt starts and stops threw 80 mm 3D-printed arms past their target and made them swing
+  back.
 - **Pen handling**: on a travel move (`G0`) the pen is lifted and given 150 ms to rise before
   the arm moves; on a drawing move it is lowered only after arriving.
 - **Display**: the OLED runs at 400 kHz I2C, so a full redraw (~10 ms) fits inside one servo
@@ -445,6 +475,9 @@ All on port 80. Every response closes the connection.
 | `GET /status` | `{"rev": revision, "job": state, "line": n, "total": n, "s": deg, "e": deg, "p": 0/1}`; state is `idle`, `uploading`, `running`, `paused`, `done`, `stopped` or `error` |
 | `POST /cmd` body = command | `OK S=<shoulder> E=<elbow> P=<0/1>` or `400 ERR <message>` |
 | `POST /job` body = G-code lines | Appends to the job being uploaded (max 8 KB per request) |
+| `PUT /file/<name>`, basic auth `ota:<ota_password>` | Writes the file to flash (`<name>.tmp`, then renamed) |
+| `POST /reset`, basic auth `ota:<ota_password>` | Restarts the board |
+| `GET /log` | Last Wi-Fi and update events, one per line, seconds since boot first |
 
 Commands for `POST /cmd`:
 
@@ -488,11 +521,11 @@ In the script:
 
 | Constant | Default | Purpose |
 |---|---|---|
-| `PIN_SHOULDER`, `PIN_ELBOW`, `PIN_PEN` | 0, 1, 3 | Servo GPIOs |
+| `PIN_SHOULDER`, `PIN_ELBOW`, `PIN_PEN` | 0, 1, 3 (C3), 25, 26, 27 (classic) | Servo GPIOs; `"pins"` in `customization.json` overrides them |
 | `OLED_SDA`, `OLED_SCL`, `OLED_W`, `OLED_H` | 5, 6, 72, 40 | Display |
 | `PEN_SETTLE_MS` | 150 | Wait after pen up/down before moving |
 | `FRAME_MS` | 20 | Servo frame period (50 Hz); one motion step per frame |
-| `GLIDE_STEP_DEG` | 2.0 | Joint step per frame for travel and jogs (≈100°/s) |
+| `GLIDE_STEP_DEG` | 1.0 | Average joint step per frame for travel and jogs (≈50°/s), ramped up and down |
 | `MAX_CHUNK` | 8192 | Largest accepted upload chunk (bytes) |
 | `config` | see [Calibration](#calibration) | Defaults when there is no `config.json` (drawing speed is `speed` there) |
 
@@ -513,7 +546,7 @@ The drawing area is no longer a constant in the page: it comes from the board's 
 |---|---|
 | Thonny's shell shows nothing | The program was started at boot before Thonny connected. Run it with F5 from Thonny instead. |
 | No Wi-Fi network at all, OLED blank or unchanged after boot | The script didn't start. Run it with F5 in Thonny to see the error. `MemoryError` means the script is too big for the RAM (as REV 11 was); otherwise check that `ssd1306.py` is on the board. |
-| Page shows "index.html is missing on the board" | Upload `brachio-web-15.html` to the board as `index.html`. |
+| Page shows "index.html is missing on the board" | Upload `index.html` to the board. |
 | Page looks outdated or buttons don't work after an update | Script and page are from different revisions; upload both from the same revision and reload the page. |
 | Wi-Fi connects but the page doesn't load | Most often Thonny stopped the program (OLED dot not blinking): reset the board with Thonny disconnected. Otherwise use `http://` explicitly and turn off mobile data. |
 | Page loads sometimes, connection unstable | These small C3 boards have weak antennas; try `ap.config(txpower=8.5)` after `ap.active(True)`. |
@@ -536,12 +569,10 @@ The drawing area is no longer a constant in the page: it comes from the board's 
 
 | File | Description |
 |---|---|
-| `brachio-codez-oled-15.py` | **Current version** (upload as `main.py`) |
-| `brachio-web-15.html` | Its web page (upload as `index.html`) |
+| `main.py` | **Current version** |
+| `index.html` | Its web page |
 | `ssd1306.py` | OLED driver (MicroPython standard driver) |
-| `ESP32_GENERIC_C3-20260824-v1.29.0.bin` | MicroPython firmware for the ESP32-C3 |
-| `square-svg.svg` | 40x40 test square for the SVG plotter |
-| `brachiograph-esp32-nfd/` | Git repository (first working port, = REV 3 era) |
+| `customization.example.json` | Template for the optional `customization.json` |
 
 Revisions (each in its own file, older ones kept for fallback):
 
