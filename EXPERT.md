@@ -8,7 +8,8 @@ simple `G0`/`G1` commands and the board plots it on its own, so the phone can sl
 disconnect meanwhile. It also runs on a classic ESP32 DevKit (no OLED), and can join an
 existing Wi-Fi instead of opening its own.
 
-Current version: **`main.py`** (REV 15.0) with its web page **`index.html`**
+Current version: **`plotter.py`** (REV 15.0) with its web page **`index.html`**, started by
+**`main.py`**
 
 ---
 
@@ -81,7 +82,9 @@ Three files are needed on the board:
 | On your computer | On the board |
 |---|---|
 | `ssd1306.py` | `ssd1306.py` |
-| `main.py` | `main.py` (runs automatically at boot) |
+| `main.py` | `main.py` (runs automatically at boot, starts the plotter) |
+| `plotter.py` | `plotter.py` (the plotter) |
+| `rescue.py` | `rescue.py` (Wi-Fi, updates over Wi-Fi, rescue server) |
 | `index.html` | `index.html` (the web page) |
 
 The web page is a separate file because the ESP32-C3 has little RAM: MicroPython compiles the
@@ -95,6 +98,8 @@ With Thonny: open the file, *File → Save as… → MicroPython device*. Or wit
 ```sh
 mpremote cp ssd1306.py :ssd1306.py
 mpremote cp main.py :main.py
+mpremote cp plotter.py :plotter.py
+mpremote cp rescue.py :rescue.py
 mpremote cp index.html :index.html
 ```
 
@@ -151,11 +156,15 @@ as `http://<hostname>.local` where mDNS is available.
 
 ### Updates over Wi-Fi
 
-`./flash.sh` without the ESP32 on USB uploads `main.py`, `ssd1306.py`, `index.html` and
-`customization.json` over Wi-Fi and restarts the board; it needs an `ota_password` in `customization.json`, and
-the first version with this feature goes on by USB. `./flash.sh <host>` if `<hostname>.local`
-doesn't resolve. Each file is written to `<name>.tmp` and renamed only when complete, so a cut
-connection leaves the old file in place; a `main.py` that doesn't start needs USB again.
+`./flash.sh` without the ESP32 on USB uploads the files over Wi-Fi and restarts the board; it
+needs an `ota_password` in `customization.json`, and the first version with this feature goes
+on by USB. `./flash.sh <host>` if `<hostname>.local` doesn't resolve. Each file is written to
+`<name>.tmp` and renamed only when complete, so a cut connection leaves the old file in place.
+
+If `plotter.py` fails to start (a bad update), `main.py` starts the rescue server from
+`rescue.py` instead: Wi-Fi and updates keep working, every page answers 503 and `GET /log`
+shows the error, so a fixed `plotter.py` can be uploaded over Wi-Fi. Only a broken `main.py`
+or `rescue.py` needs USB; both are small and rarely change.
 Joined to a network, the board checks it every 10 s and rejoins when it drops. `GET /log`
 shows the last Wi-Fi and update events (seconds since boot).
 
@@ -569,7 +578,9 @@ The drawing area is no longer a constant in the page: it comes from the board's 
 
 | File | Description |
 |---|---|
-| `main.py` | **Current version** |
+| `main.py` | Starts the plotter, or the rescue server if the plotter fails |
+| `plotter.py` | **Current version** of the plotter |
+| `rescue.py` | Wi-Fi, updates over Wi-Fi, event log and the rescue server |
 | `index.html` | Its web page |
 | `ssd1306.py` | OLED driver (MicroPython standard driver) |
 | `customization.example.json` | Template for the optional `customization.json` |

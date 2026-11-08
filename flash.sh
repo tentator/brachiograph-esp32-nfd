@@ -4,7 +4,7 @@
 # (needs "ota_password" in customization.json and a version with updates already on the board).
 set -euo pipefail
 cd "$(dirname "$0")"
-files="main.py ssd1306.py index.html customization.json"
+files="main.py rescue.py plotter.py ssd1306.py index.html customization.json"
 [[ -f customization.json ]] || { echo "customization.json missing: cp customization.example.json customization.json and fill it in" >&2; exit 1; }
 get() { python3 -c "import json, sys; print(json.load(open('customization.json')).get(sys.argv[1], ''))" "$1"; }
 target=${1:-/dev/ttyUSB0}
@@ -26,7 +26,10 @@ else
   [[ -n $pw ]] || { echo "No USB on $target, and no ota_password in customization.json for Wi-Fi" >&2; exit 1; }
   echo "Updating $host over Wi-Fi"
   for f in $files; do
-    reply=$(curl -fsS -u "ota:$pw" -T "$f" "http://$host/file/$f")
+    for try in 1 2 3; do
+      reply=$(curl -fsS -u "ota:$pw" -T "$f" "http://$host/file/$f") && break
+      [[ $try == 3 ]] && { echo "$f: upload failed" >&2; exit 1; }
+    done
     echo "$f: $reply"
   done
   curl -fsS -u "ota:$pw" -X POST "http://$host/reset" >/dev/null
