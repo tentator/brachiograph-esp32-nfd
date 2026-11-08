@@ -1,0 +1,18 @@
+{
+  "hostname": "plotter",
+  "networks": [
+    {
+      "ssid": "home-wifi",
+      "password": "home-password"
+    },
+    {
+      "ssid": "school-wifi",
+      "password": "school-password"
+    }
+  ],
+  "ap": {
+    "ssid": "plotter",
+    "password": "at-least-8-characters"
+  },
+  "ota_password": "for-updates-over-wifi"
+}

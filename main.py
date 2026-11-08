@@ -5,17 +5,39 @@ import math
 import time
 import json
 import os
+import binascii
+import machine
 from machine import Pin, PWM, I2C, SoftI2C
 import ssd1306
 
 REVISION = "REV 15.0"
 
+# customization.json (optional, see customization.example.json): this board's name,
+# Wi-Fi, update password and pins. Set on the computer and uploaded by flash.sh;
+# never served over HTTP. The calibration lives in config.json, set on the web page.
+try:
+    with open("customization.json") as f:
+        custom = json.load(f)
+except OSError:
+    custom = {}
+
+events = []  # last Wi-Fi and update events, served at /log
+
+def event(msg):
+    line = "%d %s" % (time.ticks_ms() // 1000, msg)
+    print(line)
+    events.append(line)
+    if len(events) > 30:
+        events.pop(0)
+
 # --- 1. Self-healing OLED Driver (72x40) ---
 # The built-in framebuf font is fixed at 8x8 px, so 72x40 fits 9 chars x 5 rows.
 # Errors are printed (never silently swallowed) and the display is re-initialised
 # on the next update, which recovers it after a servo-induced brownout/I2C glitch.
+C3 = "ESP32C3" in os.uname().machine
 OLED_W, OLED_H = 72, 40
-OLED_SDA, OLED_SCL = 5, 6
+# The C3 board's OLED is on GPIO 5/6; on a classic ESP32 GPIO 6 is the flash clock
+OLED_SDA, OLED_SCL = (5, 6) if C3 else (None, None)
 has_oled = False
 oled = None
 oled_lines = ("", "", "")
@@ -25,6 +47,8 @@ def init_oled():
     global oled, has_oled, oled_last_try
     has_oled = False
     oled_last_try = time.ticks_ms()
+    if OLED_SDA is None:
+        return False
     # 400 kHz keeps a full redraw at ~10 ms, shorter than one 20 ms servo frame
     for name, bus in (("HW I2C", lambda: I2C(0, sda=Pin(OLED_SDA), scl=Pin(OLED_SCL), freq=400000)),
                       ("SoftI2C", lambda: SoftI2C(sda=Pin(OLED_SDA), scl=Pin(OLED_SCL), freq=100000))):
@@ -101,10 +125,11 @@ init_oled()
 update_oled(REVISION, "BOOTING")
 
 # --- 2. Hardware Pin Assignments ---
-# If GPIO 0 was damaged during the stall, change PIN_SHOULDER to 4
-PIN_SHOULDER = 0
-PIN_ELBOW    = 1
-PIN_PEN      = 3
+# ESP32-C3 OLED board: GPIO 0/1/3; classic ESP32 DevKit: GPIO 25/26/27.
+# "pins" in customization.json overrides any of them, e.g. {"shoulder": 4} if GPIO 0 was damaged.
+pins = dict(zip(("shoulder", "elbow", "pen"), (0, 1, 3) if C3 else (25, 26, 27)))
+pins.update(custom.get("pins", {}))
+PIN_SHOULDER, PIN_ELBOW, PIN_PEN = pins["shoulder"], pins["elbow"], pins["pen"]
 
 servo_shoulder = PWM(Pin(PIN_SHOULDER), freq=50)
 servo_elbow    = PWM(Pin(PIN_ELBOW), freq=50)
@@ -166,6 +191,7 @@ def set_raw_us(pw1, pw2, pw3):
 
 PEN_SETTLE_MS = 150
 
+# Last commanded position, so tests can restore it and the web UI can stay in sync
 # Last commanded position, so tests can restore it and the web UI can stay in sync
 state = {"s": -45.0, "e": 90.0, "pen": False}
 
@@ -329,18 +355,78 @@ async def run_job():
     await move_to(state["s"], state["e"], False)
     update_oled(REVISION, job["state"].upper(), "%d/%d" % (job["line"], job["total"]))
 
-# --- 4. Wi-Fi AP Setup ---
-ap = network.WLAN(network.AP_IF)
-ap.active(True)
-ap.config(essid="ESP32-Plotter", password="plotterpassword")
-while not ap.active():
-    time.sleep_ms(100)
-# AP mode defaults to 192.168.4.1 (ESP-IDF default); read it instead of assuming
-AP_IP = ap.ifconfig()[0]
-print("AP 'ESP32-Plotter' up, IP:", AP_IP)
+# --- 4. Wi-Fi ---
+# The board joins the first network from customization.json that is in range;
+# otherwise it opens its own access point.
+
+def join_wifi(networks):
+    sta = network.WLAN(network.STA_IF)
+    sta.active(True)
+    sta.config(pm=sta.PM_NONE)  # power save delays every reply by up to ~150 ms
+    seen = [n[0].decode() for n in sta.scan()]
+    for n in networks:
+        if n["ssid"] not in seen:
+            continue
+        update_oled("WIFI", n["ssid"])
+        sta.connect(n["ssid"], n["password"])
+        for _ in range(150):
+            if sta.isconnected():
+                event("joined %s rssi %d IP %s" % (n["ssid"], sta.status("rssi"), sta.ifconfig()[0]))
+                return sta.ifconfig()[0]
+            time.sleep_ms(100)
+        event("could not join " + n["ssid"])
+        sta.disconnect()
+    sta.active(False)
+    return None
+
+def start_ap(ssid, password):
+    ap = network.WLAN(network.AP_IF)
+    ap.active(True)
+    ap.config(essid=ssid, password=password)
+    while not ap.active():
+        time.sleep_ms(100)
+    # AP mode defaults to 192.168.4.1 (ESP-IDF default); read it instead of assuming
+    print("AP '%s' up, IP: %s" % (ssid, ap.ifconfig()[0]))
+    return ap.ifconfig()[0]
+
+if "hostname" in custom:
+    network.hostname(custom["hostname"])  # before any interface is active
+ap_cfg = custom.get("ap", {})
+JOINED = custom.get("networks") and join_wifi(custom["networks"])
+IP = JOINED or start_ap(ap_cfg.get("ssid", "ESP32-Plotter"), ap_cfg.get("password", "plotterpassword"))
+# Updates over Wi-Fi (flash.sh without USB) need "ota_password" in customization.json
+OTA_AUTH = custom.get("ota_password") and \
+    b"Basic " + binascii.b2a_base64(b"ota:" + custom["ota_password"].encode()).strip()
+
+async def wifi_watch(networks):
+    # Rejoin when the connection drops; until then the board is unreachable
+    sta = network.WLAN(network.STA_IF)
+    while True:
+        await asyncio.sleep(10)
+        if sta.isconnected():
+            continue
+        event("Wi-Fi lost")
+        for n in networks:
+            try:
+                sta.connect(n["ssid"], n["password"])
+            except OSError as e:
+                event("connect %s: %r" % (n["ssid"], e))
+                continue
+            for _ in range(150):
+                await asyncio.sleep_ms(100)
+                if sta.isconnected():
+                    break
+            if sta.isconnected():
+                event("rejoined %s rssi %d" % (n["ssid"], sta.status("rssi")))
+                break
+            sta.disconnect()
+
+async def reset_soon():
+    await asyncio.sleep_ms(500)  # let the reply go out first
+    machine.reset()
 
 # --- 5. Web UI ---
-# The page is a separate file on flash (upload brachio-web-15.html as index.html).
+# The page is a separate file on flash (upload index.html).
 # Embedding it as a string made the script too big to compile in the C3's RAM.
 WEB_FILE = "index.html"
 web_buf = bytearray(1024)  # reused for every page request
@@ -456,12 +542,14 @@ async def handle_client(reader, writer):
         req = (await reader.readline()).decode('utf-8')
         if not req.startswith(("POST /cmd", "GET /status", "POST /job")):
             print("HTTP:", req.strip())
-        length = 0
+        length, auth = 0, b""
         while True:
             h = await reader.readline()
             if h in (b'\r\n', b''): break
             if h.lower().startswith(b'content-length:'):
                 length = int(h.split(b':', 1)[1].decode().strip())
+            elif h.lower().startswith(b'authorization:'):
+                auth = h.split(b':', 1)[1].strip()
 
         if req.startswith("GET / "):
             headers = (
@@ -473,9 +561,9 @@ async def handle_client(reader, writer):
             try:
                 f = open(WEB_FILE, "rb")
             except OSError:
-                print("Web page missing: upload brachio-web-15.html to the board as", WEB_FILE)
+                print("Web page missing: upload", WEB_FILE, "to the board")
                 writer.write(b"HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\n"
-                             b"index.html is missing on the board: upload brachio-web-15.html as index.html")
+                             b"index.html is missing on the board: upload index.html")
             else:
                 # Stream from flash in 1 KB pieces so the page never sits in RAM
                 writer.write(headers.encode('utf-8'))
@@ -487,6 +575,32 @@ async def handle_client(reader, writer):
                             break
                         writer.write(mv[:n])
                         await writer.drain()
+        elif req.startswith(("PUT /file/", "POST /reset")) and (not OTA_AUTH or auth != OTA_AUTH):
+            writer.write(b"HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\nERR password")
+        elif req.startswith("PUT /file/"):
+            # One file over Wi-Fi: written to <name>.tmp, renamed when complete
+            name = req.split()[1][6:]
+            if not name or "/" in name:
+                writer.write(b"HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\nERR name")
+            else:
+                left = length
+                with open(name + ".tmp", "wb") as f:
+                    while left:
+                        data = await reader.read(min(1024, left))
+                        if not data:
+                            raise OSError("upload cut off")
+                        f.write(data)
+                        left -= len(data)
+                os.rename(name + ".tmp", name)
+                event("updated %s (%d bytes)" % (name, length))
+                writer.write(b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\nOK")
+        elif req.startswith("POST /reset"):
+            event("reset requested")
+            writer.write(b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\nOK")
+            asyncio.create_task(reset_soon())
+        elif req.startswith("GET /log "):
+            writer.write(b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\n")
+            writer.write("\n".join(events).encode())
         elif req.startswith("GET /config "):
             # Lets the web UI show the saved calibration instead of hardcoded defaults
             writer.write(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n")
@@ -538,8 +652,10 @@ async def main():
         print("Server start failed:", repr(e), "- press RESET / power-cycle")
         update_oled("NO SERVER", "PRESS RST", str(e))
         return
-    print(REVISION, "Server Running on http://%s/" % AP_IP)
-    update_oled(REVISION, "READY", AP_IP)
+    print(REVISION, "Server Running on http://%s/" % IP)
+    update_oled(REVISION, "READY", IP)
+    if JOINED:
+        asyncio.create_task(wifi_watch(custom["networks"]))
     await oled_task()
 
 asyncio.run(main())
