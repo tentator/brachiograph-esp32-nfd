@@ -12,11 +12,14 @@ import uasyncio as asyncio
 # customization.json (optional, see customization.example.json): this board's name,
 # Wi-Fi, update password and pins. Set on the computer and uploaded by flash.sh;
 # never served over HTTP. The calibration lives in config.json, set on the web page.
+custom_error = None
 try:
     with open("customization.json") as f:
         custom = json.load(f)
 except OSError:
     custom = {}
+except ValueError as e:  # a typo in the file must not stop the boot: defaults, error in /log
+    custom, custom_error = {}, e
 
 def servo_pins():
     # (shoulder, elbow, pen): ESP32-C3 OLED board GPIO 0/1/3, classic ESP32 DevKit GPIO 25/26/27;
@@ -38,10 +41,15 @@ def event(msg):
             os.rename(LOG, LOG_OLD)
     except OSError:
         pass  # no log yet
-    with open(LOG, "a") as f:
-        f.write(line)
+    try:
+        with open(LOG, "a") as f:
+            f.write(line)
+    except OSError:
+        pass  # flash full or failing: the log must never stop the board
 
 event("boot, reset cause %d" % machine.reset_cause())
+if custom_error:
+    event("customization.json invalid, using defaults: %r" % custom_error)
 
 JOIN_TIMEOUT_S = 30  # 15 s was too short on a weak signal: the board fell back to its own AP
 
@@ -98,6 +106,8 @@ async def wifi_watch():
         if sta.status() == network.STAT_CONNECTING:
             event("Wi-Fi lost, reconnecting")  # the Wi-Fi stack retries by itself
             continue
+        if ap.active() and ap.status("stations"):
+            continue  # trying networks hops channels and drops the phones on the board's own AP
         if not ap.active():
             event("Wi-Fi lost, status %d" % sta.status())
         sta.active(True)

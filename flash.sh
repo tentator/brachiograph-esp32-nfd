@@ -4,8 +4,9 @@
 # (needs "ota_password" in customization.json and a version with updates already on the board).
 set -euo pipefail
 cd "$(dirname "$0")"
-files="main.py rescue.py plotter.py ssd1306.py index.html customization.json"
+files="rescue.py plotter.py ssd1306.py index.html customization.json main.py"  # main.py last: it needs the others
 [[ -f customization.json ]] || { echo "customization.json missing: cp customization.example.json customization.json and fill it in" >&2; exit 1; }
+python3 -c "import json; json.load(open('customization.json'))" || { echo "customization.json is not valid JSON, see the error above" >&2; exit 1; }
 get() { python3 -c "import json, sys; print(json.load(open('customization.json')).get(sys.argv[1], ''))" "$1"; }
 target=${1:-/dev/ttyUSB0}
 

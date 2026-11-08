@@ -379,7 +379,7 @@ WEB_FILE = "index.html"
 web_buf = bytearray(1024)  # reused for every page request
 
 # --- 6. Async Server Loop ---
-MOTION_CMDS = ("G0", "G1", "ANG", "PARK", "TEST_SHOULDER", "TEST_ELBOW", "TEST_PEN", "DONE")
+MOTION_CMDS = ("G0", "G1", "ANG", "PARK", "CFG", "TEST_SHOULDER", "TEST_ELBOW", "TEST_PEN", "DONE")
 MAX_CHUNK = 8192
 
 async def handle_cmd(cmd_text, progress):

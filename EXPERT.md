@@ -167,7 +167,8 @@ shows the error, so a fixed `plotter.py` can be uploaded over Wi-Fi. Only a brok
 or `rescue.py` needs USB; both are small and rarely change.
 Joined to a network, the board checks it every 10 s and rejoins when it drops; it waits up to
 30 s per network. Running its own access point because no network could be joined, it tries
-the networks every 60 s and switches the access point off as soon as one works. `GET /log`
+the networks every 60 s while no phone is connected to it (trying hops Wi-Fi channels and
+would drop the phones) and switches the access point off as soon as one works. `GET /log`
 shows the last Wi-Fi and update events (seconds since boot).
 
 ### The OLED
@@ -565,6 +566,7 @@ The drawing area is no longer a constant in the page: it comes from the board's 
 | OLED shows `NO SERVER` | Port 80 still held after a soft reboot: press RESET. |
 | OLED blank | Check the shell: `OLED HW I2C scan: []` means no display found (wiring/power). Any other error: re-upload the original `ssd1306.py`. |
 | Board resets or OLED glitches when servos move | Brownout: power the servos separately. |
+| Board opens `ESP32-Plotter` instead of joining your Wi-Fi, `/log` says `customization.json invalid` | A typo in `customization.json` (it was uploaded without `flash.sh`, which checks it): fix it and flash by USB. |
 | Servo buzzes at rest | It's pushing against something or the pulse is at its limit; check calibration and mechanical range. |
 | Lines are curved instead of straight | Calibration slopes or park angles are off; recalibrate with the test square. |
 | Lines are shaky or wobbly | Lower the speed; power the servos separately with a 470–1000 µF capacitor across their supply; check the arms and pen holder for play; metal-gear servos help a lot. |
