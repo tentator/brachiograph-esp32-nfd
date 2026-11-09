@@ -162,13 +162,22 @@ Without a `customization.json` on the board it opens the access point above. Wit
 that is in range, and opens the `ap` access point only if none is. `customization.json` holds passwords:
 it is in `.gitignore`, keep it out of the repository. Joined to a network, the board gets its
 address from that network's DHCP (shown on the OLED and in the shell); the hostname also works
-as `http://<hostname>.local` where mDNS is available.
+as `http://<hostname>.local` where mDNS is available. If no network could be joined, the OLED
+says why (`NO WIFI: not in range: …` or `NO WIFI: could not join …`) and shows the access
+point's name and IP. "Not in range" also means a 5 GHz-only network or a typo in the name: the
+ESP32 has 2.4 GHz only, and `/log` lists the networks it did see. If the `ap` settings can't be
+used, the board opens `ESP32-Plotter` / `plotterpassword` instead; `flash.sh` refuses an `ap`
+password shorter than 8 characters and network entries without `ssid` or `password`.
 
 ### Updates over Wi-Fi
 
 `./flash.sh` without the ESP32 on USB uploads the files over Wi-Fi and restarts the board; it
 needs an `ota_password` in `customization.json`, and the first version with this feature goes
-on by USB. `./flash.sh <host>` if `<hostname>.local` doesn't resolve. Each file is written to
+on by USB. It looks for the board at `<hostname>.local`, then at `192.168.4.1` (its own access
+point: connect the computer to that Wi-Fi first), and stops if neither answers;
+`./flash.sh <host>` for another address. It lists the files on the board before and after the
+update and shows the end of its log after the restart. By USB it shows the files and the end
+of the log before erasing the flash, and the files after copying. Each file is written to
 `<name>.tmp` and renamed only when complete, so a cut connection leaves the old file in place.
 
 If `plotter.py` fails to start (a bad update), `main.py` starts the rescue server from
@@ -176,9 +185,9 @@ If `plotter.py` fails to start (a bad update), `main.py` starts the rescue serve
 shows the error, so a fixed `plotter.py` can be uploaded over Wi-Fi. Only a broken `main.py`
 or `rescue.py` needs USB; both are small and rarely change.
 Joined to a network, the board checks it every 10 s and rejoins when it drops; it waits up to
-30 s per network. Running its own access point because no network could be joined, it tries
-the networks every 60 s while no phone is connected to it (trying hops Wi-Fi channels and
-would drop the phones) and switches the access point off as soon as one works. `GET /log`
+30 s per network. Running its own access point because no network could be joined, it keeps
+the access point steady and tries the networks again only at the next restart: trying takes
+the radio off the access point's channel, and phones then couldn't even see it. `GET /log`
 shows the last Wi-Fi and update events (seconds since boot).
 
 ### The OLED
@@ -500,6 +509,7 @@ All on port 80. Every response closes the connection.
 | `POST /job` body = G-code lines | Appends to the job being uploaded (max 8 KB per request) |
 | `PUT /file/<name>`, basic auth `ota:<ota_password>` | Writes the file to flash (`<name>.tmp`, then renamed) |
 | `POST /reset`, basic auth `ota:<ota_password>` | Restarts the board |
+| `GET /files` | Files on the board's flash, one `size name` line each |
 | `GET /log` | Boot (with `machine.reset_cause()`: 1 power on, 2 reset button or `/reset`, 3 watchdog, 5 soft reset), Wi-Fi, update and error events, one per line, seconds since boot first; kept in flash (`log.txt`, rotated to `log.old` at 8 KB) |
 
 Commands for `POST /cmd`:
