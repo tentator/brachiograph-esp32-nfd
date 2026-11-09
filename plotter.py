@@ -5,7 +5,7 @@ import time
 import json
 import os
 from machine import Pin, PWM, I2C, SoftI2C
-from rescue import custom, event, connect, wifi_watch, recv, read_request, handle_update, servo_pins
+from rescue import custom, event, connect, wifi_watch, wifi_state, recv, read_request, handle_update, servo_pins
 
 REVISION = "REV 15.0"
 
@@ -583,7 +583,10 @@ async def main():
         update_oled("NO SERVER", "PRESS RST", str(e))
         return
     print(REVISION, "Server Running on http://%s/" % IP)
-    update_oled(REVISION, "READY", IP)
+    # On the board's own AP: its name, and why the networks from customization.json failed
+    ap, problem = wifi_state.get("ap"), wifi_state["problem"]
+    update_oled(REVISION, "NO WIFI: " + problem if problem else "READY",
+                "AP %s %s" % (ap, IP) if ap else IP)
     if custom.get("networks"):
         asyncio.create_task(wifi_watch())
     try:
