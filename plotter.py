@@ -160,8 +160,13 @@ def servo(pin, us):
     pwm.duty_ns(int(us * 1000))
     return pwm
 
+# One after another: each servo draws its biggest current while it moves into the park
+# pose, and all three at once can brown out a board that powers them from its own 5V pin.
+SERVO_START_GAP_MS = 300
 servo_shoulder = servo(PIN_SHOULDER, config["s1_pw"])
+time.sleep_ms(SERVO_START_GAP_MS)
 servo_elbow = servo(PIN_ELBOW, config["s2_pw"])
+time.sleep_ms(SERVO_START_GAP_MS)
 servo_pen = servo(PIN_PEN, config["pen_up"])
 
 def set_raw_us(pw1, pw2, pw3):

@@ -22,10 +22,12 @@ except ValueError as e:  # a typo in the file must not stop the boot: defaults, 
     custom, custom_error = {}, e
 
 def servo_pins():
-    # (shoulder, elbow, pen): ESP32-C3 OLED board GPIO 0/1/3, classic ESP32 DevKit GPIO 25/26/27;
+    # (shoulder, elbow, pen): classic ESP32 DevKit GPIO 25/26/27, ESP32-S2/S3 GPIO 4/5/6 (25-27
+    # are flash pins there), ESP32-C2/C3/C5/C6 GPIO 0/1/3 (the C3 OLED board's wiring);
     # "pins" in customization.json overrides any of them, e.g. {"shoulder": 4} if GPIO 0 was damaged
+    chip = os.uname().machine.split()[-1]  # "Generic ESP32S3 module with ESP32S3" -> "ESP32S3"
     pins = dict(zip(("shoulder", "elbow", "pen"),
-                    (0, 1, 3) if "ESP32C3" in os.uname().machine else (25, 26, 27)))
+                    {"ESP32": (25, 26, 27), "ESP32S2": (4, 5, 6), "ESP32S3": (4, 5, 6)}.get(chip, (0, 1, 3))))
     pins.update(custom.get("pins", {}))
     return pins["shoulder"], pins["elbow"], pins["pen"]
 

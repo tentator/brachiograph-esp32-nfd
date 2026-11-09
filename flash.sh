@@ -25,14 +25,18 @@ else
 fi
 
 if [[ -n $target && -e $target ]]; then
-  # Captured first: "| grep -q" would stop reading early and fail the pipeline under pipefail
+  # Any ESP32 with Wi-Fi: esptool names the chip (ESP32-C3, ESP32-S3, ...); a classic ESP32
+  # shows its package instead (ESP32-D0WD-V3, ESP32-PICO-D4, ESP32-S0WD), which leaves model empty
   info=$(esptool --port "$target" chip-id) || { echo "The ESP32 on $target does not answer" >&2; exit 1; }
-  case $info in
-    *ESP32-C3*) chip=esp32c3 fw=ESP32_GENERIC_C3-20260824-v1.29.0.bin offset=0x0 ;;
-    *ESP32-S*|*ESP32-C*|*ESP32-H*|*ESP32-P*) echo "Only ESP32-C3 and classic ESP32 boards are supported" >&2; exit 1 ;;
-    *) chip=esp32 fw=ESP32_GENERIC-20260824-v1.29.0.bin offset=0x1000 ;;
-  esac
-  [[ -f $fw ]] || curl -fLO "https://micropython.org/resources/firmware/$fw"
+  model=$(grep -oE 'ESP32-[CSHP][1-9][0-9]*' <<<"$info" | head -1 || true)
+  variant=${model#ESP32-}
+  case $variant in H*|P*) echo "$model has no Wi-Fi of its own; the plotter needs Wi-Fi" >&2; exit 1 ;; esac
+  chip=esp32${variant,,}
+  fw=ESP32_GENERIC${variant:+_$variant}-20260824-v1.29.0.bin
+  case $variant in ""|S2) offset=0x1000 ;; C5) offset=0x2000 ;; *) offset=0x0 ;; esac  # where the bootloader goes
+  echo "Found ${model:-a classic ESP32} on $target"
+  [[ -f $fw ]] || curl -fLO "https://micropython.org/resources/firmware/$fw" \
+    || { echo "No MicroPython $fw for ${model:-ESP32}" >&2; exit 1; }
   esptool --chip $chip --port "$target" erase-flash
   esptool --chip $chip --port "$target" --baud 460800 write-flash $offset "$fw"
   echo "Waiting for MicroPython's first-boot setup..."

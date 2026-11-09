@@ -5,8 +5,8 @@ to an **ESP32-C3 board with a built-in 0.42" 72x40 OLED**. The ESP32 runs its ow
 access point and serves a web page; everything heavy (SVG parsing, image-to-line conversion,
 path planning) happens in your browser. The finished drawing is uploaded to the board as
 simple `G0`/`G1` commands and the board plots it on its own, so the phone can sleep or
-disconnect meanwhile. It also runs on a classic ESP32 DevKit (no OLED), and can join an
-existing Wi-Fi instead of opening its own.
+disconnect meanwhile. It also runs on a classic ESP32 DevKit and the other ESP32 chips with
+Wi-Fi (S2, S3, C2, C5, C6; no OLED there), and can join an existing Wi-Fi instead of opening its own.
 
 Current version: **`plotter.py`** (REV 15.0) with its web page **`index.html`**, started by
 **`main.py`**
@@ -31,12 +31,12 @@ Current version: **`plotter.py`** (REV 15.0) with its web page **`index.html`**,
 
 ## Hardware
 
-| Part | ESP32-C3 OLED board | Classic ESP32 DevKit |
-|---|---|---|
-| Shoulder servo (inner arm) | GPIO **0** | GPIO **25** |
-| Elbow servo (outer arm) | GPIO **1** | GPIO **26** |
-| Pen-lift servo | GPIO **3** | GPIO **27** |
-| OLED SSD1306 72x40 (on board) | I2C SDA = GPIO **5**, SCL = GPIO **6**, address 0x3C (0x3D also detected) | none |
+| Part | ESP32-C3 OLED board (also C2, C5, C6) | Classic ESP32 DevKit | ESP32-S2 / S3 |
+|---|---|---|---|
+| Shoulder servo (inner arm) | GPIO **0** | GPIO **25** | GPIO **4** |
+| Elbow servo (outer arm) | GPIO **1** | GPIO **26** | GPIO **5** |
+| Pen-lift servo | GPIO **3** | GPIO **27** | GPIO **6** |
+| OLED SSD1306 72x40 (on board) | C3 only: I2C SDA = GPIO **5**, SCL = GPIO **6**, address 0x3C (0x3D also detected) | none | none |
 
 Wire colours used in the README's wiring diagram (`images/wiring.png`, drawn by
 `images/draw.py`): black GND, red +5 V, green shoulder, yellow elbow, white pen.
@@ -48,9 +48,13 @@ overrides single servo pins, e.g. `"pins": {"shoulder": 4}`.
   (see [Arms and drawing area](#arms-and-drawing-area)).
 - Servos: standard hobby servos at 50 Hz. Pulse widths are clamped to 750–2250 µs for the
   arm and 1000–2000 µs for the pen so a bad calibration can't drive them into their end stops.
-- **Power the servos from a separate 5 V supply** (common ground with the ESP32). Three servos
-  starting together can draw over 1 A; powered from the board they cause brownouts, resets and
-  OLED glitches.
+- The servos are switched on one after another, 300 ms apart (`SERVO_START_GAP_MS`), so their
+  start-up currents don't add up.
+- **Power:** the servos run off the board's `5V` pin (USB power), with a 2200 µF capacitor
+  across their supply on the breadboard to absorb the current spikes (see the README's wiring).
+  Three servos starting together can draw over 1 A; if the board resets or the OLED glitches,
+  use a stronger USB power supply or feed the servos from a separate 5 V supply (common ground
+  with the ESP32).
 - If GPIO 0 ever stops working, set `"pins": {"shoulder": 4}` in `customization.json`.
 
 The arm geometry and drawing area follow the original BrachioGraph: the shoulder is at (0, 0),
@@ -73,7 +77,9 @@ esptool.py --chip esp32c3 --port /dev/ttyACM0 erase_flash
 esptool.py --chip esp32c3 --port /dev/ttyACM0 write_flash -z 0x0 ESP32_GENERIC_C3-20260824-v1.29.0.bin
 ```
 
-On a classic ESP32 use `--chip esp32`, its port (often `/dev/ttyUSB0`) and offset `0x1000`.
+On a classic ESP32 use `--chip esp32`, its port (often `/dev/ttyUSB0`) and offset `0x1000`;
+other chips take `ESP32_GENERIC_<chip>` (e.g. `ESP32_GENERIC_S3`) at offset `0x0`, except the S2
+(`0x1000`) and the C5 (`0x2000`). `flash.sh` picks all this by itself from the chip it finds.
 (On the C3 the firmware goes to offset `0x0`. If the port isn't found, hold BOOT while
 plugging in the board.) Thonny can do the same via *Tools → Options → Interpreter → Install or
 update MicroPython*.
@@ -537,7 +543,7 @@ In the script:
 
 | Constant | Default | Purpose |
 |---|---|---|
-| `PIN_SHOULDER`, `PIN_ELBOW`, `PIN_PEN` | 0, 1, 3 (C3), 25, 26, 27 (classic) | Servo GPIOs; `"pins"` in `customization.json` overrides them |
+| `PIN_SHOULDER`, `PIN_ELBOW`, `PIN_PEN` | 0, 1, 3 (C2/C3/C5/C6), 25, 26, 27 (classic), 4, 5, 6 (S2/S3) | Servo GPIOs; `"pins"` in `customization.json` overrides them |
 | `OLED_SDA`, `OLED_SCL`, `OLED_W`, `OLED_H` | 5, 6, 72, 40 | Display |
 | `PEN_SETTLE_MS` | 150 | Wait after pen up/down before moving |
 | `FRAME_MS` | 20 | Servo frame period (50 Hz); one motion step per frame |
@@ -568,11 +574,11 @@ The drawing area is no longer a constant in the page: it comes from the board's 
 | Page loads sometimes, connection unstable | These small C3 boards have weak antennas; try `ap.config(txpower=8.5)` after `ap.active(True)`. |
 | OLED shows `NO SERVER` | Port 80 still held after a soft reboot: press RESET. |
 | OLED blank | Check the shell: `OLED HW I2C scan: []` means no display found (wiring/power). Any other error: re-upload the original `ssd1306.py`. |
-| Board resets or OLED glitches when servos move | Brownout: power the servos separately. |
+| Board resets or OLED glitches when servos move | Brownout: check the capacitor (polarity, firmly in the breadboard), use a stronger USB power supply, or power the servos separately. |
 | Board opens `ESP32-Plotter` instead of joining your Wi-Fi, `/log` says `customization.json invalid` | A typo in `customization.json` (it was uploaded without `flash.sh`, which checks it): fix it and flash by USB. |
 | Servo buzzes at rest | It's pushing against something or the pulse is at its limit; check calibration and mechanical range. |
 | Lines are curved instead of straight | Calibration slopes or park angles are off; recalibrate with the test square. |
-| Lines are shaky or wobbly | Lower the speed; power the servos separately with a 470–1000 µF capacitor across their supply; check the arms and pen holder for play; metal-gear servos help a lot. |
+| Lines are shaky or wobbly | Lower the speed; check the capacitor across the servo supply; check the arms and pen holder for play; metal-gear servos help a lot. |
 | Small steps where lines reverse, back-and-forth lines don't overlap | Servo backlash: set the hysteresis correction. |
 | Pen drags between shapes | Increase `PEN_SETTLE_MS` or lower `pen_up` (more lift). |
 | *busy: a plot is in progress* | A plot is running or paused; stop it first (progress bar buttons, or `curl -d JOB_STOP .../cmd`). |
