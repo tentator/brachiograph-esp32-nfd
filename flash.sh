@@ -13,6 +13,9 @@ get() { python3 -c "import json, sys; print(json.load(open('customization.json')
 if [[ -n ${1:-} ]]; then
   target=$1
   for dev in "/dev/$1" "/dev/tty$1"; do [[ $1 != /* && -e $dev ]] && { target=$dev; break; }; done
+  if [[ $target =~ ^(/dev/|tty|ACM|USB) && ! -e $target ]]; then
+    echo "No ESP32 on $target: is it plugged in? Ports found: $(ls /dev/ttyACM* /dev/ttyUSB* 2>/dev/null | xargs || true)" >&2; exit 1
+  fi
 else
   ports=$(ls /dev/ttyACM* /dev/ttyUSB* 2>/dev/null || true)
   if (( $(wc -w <<<"$ports") > 1 )); then
@@ -22,11 +25,13 @@ else
 fi
 
 if [[ -n $target && -e $target ]]; then
-  if esptool --port "$target" chip-id | grep -q "ESP32-C3"; then
-    chip=esp32c3 fw=ESP32_GENERIC_C3-20260824-v1.29.0.bin offset=0x0
-  else
-    chip=esp32 fw=ESP32_GENERIC-20260824-v1.29.0.bin offset=0x1000
-  fi
+  # Captured first: "| grep -q" would stop reading early and fail the pipeline under pipefail
+  info=$(esptool --port "$target" chip-id) || { echo "The ESP32 on $target does not answer" >&2; exit 1; }
+  case $info in
+    *ESP32-C3*) chip=esp32c3 fw=ESP32_GENERIC_C3-20260824-v1.29.0.bin offset=0x0 ;;
+    *ESP32-S*|*ESP32-C*|*ESP32-H*|*ESP32-P*) echo "Only ESP32-C3 and classic ESP32 boards are supported" >&2; exit 1 ;;
+    *) chip=esp32 fw=ESP32_GENERIC-20260824-v1.29.0.bin offset=0x1000 ;;
+  esac
   [[ -f $fw ]] || curl -fLO "https://micropython.org/resources/firmware/$fw"
   esptool --chip $chip --port "$target" erase-flash
   esptool --chip $chip --port "$target" --baud 460800 write-flash $offset "$fw"
