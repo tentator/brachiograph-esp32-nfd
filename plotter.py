@@ -5,7 +5,6 @@ import time
 import json
 import os
 from machine import Pin, PWM, I2C, SoftI2C
-import ssd1306
 from rescue import custom, event, connect, wifi_watch, recv, read_request, handle_update, servo_pins
 
 REVISION = "REV 15.0"
@@ -16,8 +15,11 @@ REVISION = "REV 15.0"
 # on the next update, which recovers it after a servo-induced brownout/I2C glitch.
 C3 = "ESP32C3" in os.uname().machine
 OLED_W, OLED_H = 72, 40
+# "oled": false in customization.json for a C3 board without a display: then nothing touches
+# the display pins and ssd1306.py isn't loaded. On by default on the C3 OLED board only.
+USE_OLED = custom.get("oled", C3)
 # The C3 board's OLED is on GPIO 5/6; on a classic ESP32 GPIO 6 is the flash clock
-OLED_SDA, OLED_SCL = (5, 6) if C3 else (None, None)
+OLED_SDA, OLED_SCL = (5, 6) if USE_OLED else (None, None)
 has_oled = False
 oled = None
 oled_lines = ("", "", "")
@@ -29,6 +31,7 @@ def init_oled():
     oled_last_try = time.ticks_ms()
     if OLED_SDA is None:
         return False
+    import ssd1306
     # 400 kHz keeps a full redraw at ~10 ms, shorter than one 20 ms servo frame
     for name, bus in (("HW I2C", lambda: I2C(0, sda=Pin(OLED_SDA), scl=Pin(OLED_SCL), freq=400000)),
                       ("SoftI2C", lambda: SoftI2C(sda=Pin(OLED_SDA), scl=Pin(OLED_SCL), freq=100000))):

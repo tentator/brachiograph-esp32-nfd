@@ -42,7 +42,8 @@ Wire colours used in the README's wiring diagram (`images/wiring.png`, drawn by
 `images/draw.py`): black GND, red +5 V, green shoulder, yellow elbow, white pen.
 
 The script picks the column from the chip it runs on; `"pins"` in `customization.json`
-overrides single servo pins, e.g. `"pins": {"shoulder": 4}`.
+overrides single servo pins, e.g. `"pins": {"shoulder": 4}`. `"oled": false` switches the
+display off on a C3 board that has none (nothing touches GPIO 5/6 then).
 
 - Arms: inner `L1` = 80 mm, outer `L2` = 80 mm by default; set your lengths in the web page
   (see [Arms and drawing area](#arms-and-drawing-area)).

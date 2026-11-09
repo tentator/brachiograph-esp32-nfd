@@ -22,8 +22,9 @@ except ValueError as e:  # a typo in the file must not stop the boot: defaults, 
     custom, custom_error = {}, e
 
 def servo_pins():
-    # (shoulder, elbow, pen): classic ESP32 DevKit GPIO 25/26/27, ESP32-S2/S3 GPIO 4/5/6 (25-27
-    # are flash pins there), ESP32-C2/C3/C5/C6 GPIO 0/1/3 (the C3 OLED board's wiring);
+    # (shoulder, elbow, pen): classic ESP32 (WROOM) DevKit GPIO 25/26/27 (GPIO 34-39 are input
+    # only), ESP32-S2/S3 GPIO 4/5/6 (26 and up are flash pins there), ESP32-C2/C3/C5/C6 GPIO 0/1/3
+    # (the C3 OLED board's wiring);
     # "pins" in customization.json overrides any of them, e.g. {"shoulder": 4} if GPIO 0 was damaged
     chip = os.uname().machine.split()[-1]  # "Generic ESP32S3 module with ESP32S3" -> "ESP32S3"
     pins = dict(zip(("shoulder", "elbow", "pen"),
@@ -68,6 +69,7 @@ def join_wifi(networks, show):
         for _ in range(JOIN_TIMEOUT_S * 10):
             if sta.isconnected():
                 event("joined %s rssi %d IP %s" % (n["ssid"], sta.status("rssi"), sta.ifconfig()[0]))
+                network.WLAN(network.AP_IF).active(False)  # an AP survives a soft reboot
                 return sta.ifconfig()[0]
             time.sleep_ms(100)
         event("could not join " + n["ssid"])
@@ -78,7 +80,7 @@ def join_wifi(networks, show):
 def start_ap(ssid, password):
     ap = network.WLAN(network.AP_IF)
     ap.active(True)
-    ap.config(essid=ssid, password=password)
+    ap.config(essid=ssid, password=password, authmode=3)  # WPA2-PSK, as in Chris Huang's Wi-Fi client mode
     while not ap.active():
         time.sleep_ms(100)
     # AP mode defaults to 192.168.4.1 (ESP-IDF default); read it instead of assuming
