@@ -281,10 +281,8 @@ def inverse_kinematics(x, y):
     # Pen position (mm) -> (shoulder_deg, elbow_deg), or None if unreachable
     L1, L2 = config["L1"], config["L2"]
     hypotenuse = math.sqrt(x**2 + y**2)
-    if hypotenuse < 1.0:
+    if hypotenuse < 1.0 or hypotenuse > L1 + L2:
         return None  # unreachable (and would divide by zero)
-    if hypotenuse > (L1 + L2):
-        hypotenuse = (L1 + L2) * 0.999
 
     hyp_angle = math.asin(max(-1.0, min(1.0, x / hypotenuse)))
     cos_inner = (hypotenuse**2 + L1**2 - L2**2) / (2 * hypotenuse * L1)
@@ -342,13 +340,14 @@ async def execute_gcode(line):
         elif p.startswith('Y'): y = float(p[1:])
     if x is None or y is None:
         return
+    a = inverse_kinematics(x, y)
+    if not a:
+        raise ValueError("out of reach: X%g Y%g" % (x, y))
 
     if cmd == 'G1' and pos["x"] is not None:
         await line_to(x, y)  # sets pos, also where a Stop cut the line short
     else:
-        a = inverse_kinematics(x, y)
-        if a:
-            await move_to(a[0], a[1], cmd == 'G1')
+        await move_to(a[0], a[1], cmd == 'G1')
         pos["x"], pos["y"] = x, y
 
 # --- Plot jobs: the whole drawing is uploaded to flash, then plotted by the board ---
@@ -433,10 +432,24 @@ web_buf = bytearray(1024)  # reused for every page request
 MOTION_CMDS = ("G0", "G1", "ANG", "PARK", "CFG", "TEST_SHOULDER", "TEST_ELBOW", "TEST_PEN", "DONE")
 MAX_CHUNK = 8192
 
-async def handle_cmd(cmd_text, progress):
-    if job["state"] in JOB_ACTIVE and cmd_text.split(" ", 1)[0] in MOTION_CMDS + ("JOB_BEGIN", "JOB_START"):
-        raise ValueError("busy: a plot is in progress")
+moving = {"cmd": None}  # a single command still moving the arm: a second one would fight it
 
+async def handle_cmd(cmd_text, progress):
+    name = cmd_text.split(" ", 1)[0]
+    if name in MOTION_CMDS + ("JOB_BEGIN", "JOB_START"):
+        if job["state"] in JOB_ACTIVE:
+            raise ValueError("busy: a plot is in progress")
+        if moving["cmd"]:
+            raise ValueError("busy: still moving for " + moving["cmd"])
+    if name not in MOTION_CMDS:
+        return await run_cmd(cmd_text, progress)
+    moving["cmd"] = cmd_text
+    try:
+        await run_cmd(cmd_text, progress)
+    finally:
+        moving["cmd"] = None
+
+async def run_cmd(cmd_text, progress):
     if cmd_text.startswith("JOB_BEGIN"):
         # JOB_BEGIN <lines> <bytes>: start a new upload, checking there is room on flash
         _, total, size = cmd_text.split()
