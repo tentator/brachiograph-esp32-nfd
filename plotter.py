@@ -1,3 +1,4 @@
+import network
 import socket
 import uasyncio as asyncio
 import math
@@ -5,15 +6,15 @@ import time
 import json
 import os
 from machine import Pin, PWM, I2C, SoftI2C
-from rescue import custom, event, connect, wifi_watch, wifi_state, recv, read_request, handle_update, servo_pins
+from rescue import custom, event, connect, wifi_watch, wifi_state, recv, read_request, handle_update, servo_pins, Led, chip, NAME
 
-REVISION = "REV 15.0"
+REVISION = "REV 16.0"
 
 # --- 1. Self-healing OLED Driver (72x40) ---
 # The built-in framebuf font is fixed at 8x8 px, so 72x40 fits 9 chars x 5 rows.
 # Errors are printed (never silently swallowed) and the display is re-initialised
 # on the next update, which recovers it after a servo-induced brownout/I2C glitch.
-C3 = "ESP32C3" in os.uname().machine
+C3 = chip() == "ESP32C3"
 OLED_W, OLED_H = 72, 40
 # "oled": false in customization.json for a C3 board without a display: then nothing touches
 # the display pins and ssd1306.py isn't loaded. On by default on the C3 OLED board only.
@@ -24,9 +25,11 @@ has_oled = False
 oled = None
 oled_lines = ("", "", "")
 oled_last_try = 0
+oled_seen = False  # True once the display has worked: only then retry it after a glitch
+ready_pages = []   # the idle screen's page(s), see ready_screen()
 
 def init_oled():
-    global oled, has_oled, oled_last_try
+    global oled, has_oled, oled_last_try, oled_seen
     has_oled = False
     oled_last_try = time.ticks_ms()
     if OLED_SDA is None:
@@ -43,7 +46,7 @@ def init_oled():
             if addr is None:
                 continue
             oled = ssd1306.SSD1306_I2C(OLED_W, OLED_H, i2c, addr=addr)
-            has_oled = True
+            has_oled = oled_seen = True
             print("OLED OK via", name, "at", hex(addr))
             return True
         except Exception as e:
@@ -60,8 +63,9 @@ def draw_oled():
     # Lines longer than 9 chars scroll as a marquee (advanced by oled_task)
     global has_oled
     if not has_oled:
-        # Retry at most every 5 s so a dead display can't slow down plotting
-        if time.ticks_diff(time.ticks_ms(), oled_last_try) < 5000 or not init_oled():
+        # Retry only a display that worked before (lost in a brownout), at most every 5 s so
+        # it can't slow down plotting; a board without one is scanned once at boot and left alone
+        if not oled_seen or time.ticks_diff(time.ticks_ms(), oled_last_try) < 5000 or not init_oled():
             return
     try:
         oled.fill(0)
@@ -87,20 +91,27 @@ def update_oled(l1="", l2="", l3=""):
     draw_oled()
 
 async def oled_task():
-    # Scrolls long lines and blinks the corner dot. If the dot stops blinking,
-    # the program has stopped (e.g. Thonny interrupted it) and the web server is gone.
+    # Scrolls long lines and blinks the corner dot and the board's LED together. If they stop
+    # blinking, the program has stopped (e.g. Thonny interrupted it) and the web server is gone.
+    # While plotting the dot pauses (no extra redraws) and the LED blinks faster instead.
     global oled_scroll, oled_beat
+    led = Led()
     tick = 0
     while True:
         await asyncio.sleep_ms(350)
         tick += 1
-        if job["state"] == "running":
+        if job["state"] in ("running", "parking"):
+            led.set(tick % 2 == 0)
             continue  # no extra redraws while plotting; run_job updates the progress
+        if len(ready_pages) > 1 and oled_lines in ready_pages and tick % 17 == 0:
+            # About every 6 s, the idle screen's other page (e.g. Wi-Fi problem / how to connect)
+            update_oled(*ready_pages[(ready_pages.index(oled_lines) + 1) % len(ready_pages)])
         scrolling = any(len(str(l)) > OLED_COLS for l in oled_lines)
         if scrolling:
             oled_scroll += 1
         if tick % 3 == 0:
             oled_beat = not oled_beat
+            led.set(oled_beat)
         if scrolling or tick % 3 == 0:
             draw_oled()  # each redraw costs ~40 ms of I2C, so skip idle ones
 
@@ -111,6 +122,14 @@ update_oled(REVISION, "BOOTING")
 PIN_SHOULDER, PIN_ELBOW, PIN_PEN = servo_pins()
 
 # --- 3. Calibration Configuration ---
+# "arms" in customization.json picks the elbow's default direction: "wooden" (elbow servo on
+# the lower arm, as in the original BrachioGraph: +10 us per degree) or "3d-printed" (servo
+# on the upper arm: -10). The calibration on the web page overrides it either way.
+ARMS = custom.get("arms", "wooden")
+if ARMS not in ("wooden", "3d-printed"):
+    event("customization.json: unknown \"arms\" %r, using \"wooden\"" % (ARMS,))
+    ARMS = "wooden"
+
 config = {
     "L1": 80.0,          # inner arm (mm)
     "L2": 80.0,          # outer arm (mm)
@@ -119,7 +138,7 @@ config = {
     "s1_slope": -10.0,
     "s2_pw": 1500,
     "s2_ang": 90.0,
-    "s2_slope": -10.0,   # elbow servo on the upper arm (3D-printed arms); +10 with it on the lower arm
+    "s2_slope": -10.0 if ARMS == "3d-printed" else 10.0,  # see ARMS
     "s1_hyst": 0.0,      # hysteresis correction (us), see set_hardware
     "s2_hyst": 0.0,
     "pen_up": 1450,
@@ -337,7 +356,7 @@ async def execute_gcode(line):
 # network pauses (which made the arm stop and start at every point).
 JOB_FILE = "job.gcode"
 job = {"state": "idle", "line": 0, "total": 0, "pause": False, "stop": False, "task": None}
-JOB_ACTIVE = ("running", "paused")
+JOB_ACTIVE = ("running", "paused", "parking")
 
 async def run_job():
     job["state"], job["line"] = "running", 0
@@ -373,12 +392,36 @@ async def run_job():
     except Exception as e:
         print("Job error:", repr(e))
         final = "error"
-    await go_park()  # still "running": motion commands stay blocked until parked
+    # "parking": motion commands stay blocked until parked, and the page says why it waits
+    job["state"] = "parking"
+    update_oled("PARKING", "%d/%d" % (job["line"], job["total"]))
+    await go_park()
     job["state"] = final
     update_oled(REVISION, job["state"].upper(), "%d/%d" % (job["line"], job["total"]))
 
 # --- 4. Wi-Fi: rescue.py ---
 IP = connect(lambda *lines: update_oled(*lines))
+
+def ready_screen():
+    # The idle OLED: how to reach the board. On the fallback access point, two pages that
+    # alternate (oled_task): why the networks from customization.json failed, and the AP.
+    global ready_pages
+    sta = network.WLAN(network.STA_IF)
+    ip = sta.ifconfig()[0] if sta.isconnected() else IP  # may change after a rejoin
+    ap, problem = wifi_state.get("ap"), wifi_state["problem"]
+    if problem:
+        ready_pages = [(REVISION, "NO WIFI", problem), (REVISION, "AP " + ap, ip)]
+    else:
+        # On a network: its name (http://<name>.local) and IP; on its own AP: the AP and IP
+        ready_pages = [(REVISION, "AP " + ap if ap else NAME, ip)]
+    update_oled(*ready_pages[0])
+
+def wifi_show(*lines):
+    # For wifi_watch: a message while the connection is lost, the idle screen once it's back
+    if lines:
+        update_oled(*lines)
+    else:
+        ready_screen()
 
 # --- 5. Web UI ---
 # The page is a separate file on flash (upload index.html).
@@ -530,6 +573,9 @@ async def handle_client(reader, writer):
                             break
                         writer.write(mv[:n])
                         await writer.drain()
+        elif req.startswith(("PUT /file/", "POST /reset")) and job["state"] in JOB_ACTIVE:
+            # An update or a restart would cut the plot short: finish or stop it first
+            writer.write(b"HTTP/1.1 409 Conflict\r\nConnection: close\r\n\r\nERR busy: a plot is in progress")
         elif await handle_update(req, reader, writer, length, auth):
             pass
         elif req.startswith("GET /config "):
@@ -538,7 +584,7 @@ async def handle_client(reader, writer):
             writer.write(json.dumps(config).encode())
         elif req.startswith("GET /status "):
             # Polled by the web page while a job runs
-            st = {"rev": REVISION, "job": job["state"], "line": job["line"], "total": job["total"],
+            st = {"rev": REVISION, "name": NAME, "job": job["state"], "line": job["line"], "total": job["total"],
                   "s": state["s"], "e": state["e"], "p": int(state["pen"])}
             writer.write(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n")
             writer.write(json.dumps(st).encode())
@@ -583,12 +629,9 @@ async def main():
         update_oled("NO SERVER", "PRESS RST", str(e))
         return
     print(REVISION, "Server Running on http://%s/" % IP)
-    # On the board's own AP: its name, and why the networks from customization.json failed
-    ap, problem = wifi_state.get("ap"), wifi_state["problem"]
-    update_oled(REVISION, "NO WIFI: " + problem if problem else "READY",
-                "AP %s %s" % (ap, IP) if ap else IP)
+    ready_screen()
     if custom.get("networks"):
-        asyncio.create_task(wifi_watch())
+        asyncio.create_task(wifi_watch(wifi_show))
     try:
         await oled_task()
     finally:

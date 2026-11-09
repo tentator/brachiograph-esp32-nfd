@@ -8,8 +8,8 @@ simple `G0`/`G1` commands and the board plots it on its own, so the phone can sl
 disconnect meanwhile. It also runs on a classic ESP32 DevKit and the other ESP32 chips with
 Wi-Fi (S2, S3, C2, C5, C6; no OLED there), and can join an existing Wi-Fi instead of opening its own.
 
-Current version: **`plotter.py`** (REV 15.0) with its web page **`index.html`**, started by
-**`main.py`**
+Current version: **`plotter.py`** (REV 16.0) with its web page **`index.html`**, started by
+**`main.py`**. The short build guide for beginners is [README.md](README.md).
 
 ---
 
@@ -43,7 +43,19 @@ Wire colours used in the README's wiring diagram (`images/wiring.png`, drawn by
 
 The script picks the column from the chip it runs on; `"pins"` in `customization.json`
 overrides single servo pins, e.g. `"pins": {"shoulder": 4}`. `"oled": false` switches the
-display off on a C3 board that has none (nothing touches GPIO 5/6 then).
+display off on a C3 board that has none (nothing touches GPIO 5/6 then). Without that setting
+a C3 board without a display still works: it scans for one once at boot and then leaves the
+I2C pins alone.
+
+| Setting in `customization.json` | Default | Effect |
+|---|---|---|
+| `"arms"` | `"wooden"` | Default elbow direction: `"wooden"` (elbow servo on the lower arm, as in the original BrachioGraph) gives S2 Slope +10, `"3d-printed"` (servo on the upper arm, the printed arms in [PARTS.md](PARTS.md)) gives −10. The calibration saved on the web page overrides it. |
+| `"led"` | C3: `{"pin": 8, "active_low": true}`, classic ESP32: `{"pin": 2, "active_low": false}`, others: none | The board's LED, blinked as a heartbeat (see [The OLED](#the-oled)); `false` for none |
+| `"oled"` | `true` on C3, else `false` | Use the 72x40 display on GPIO 5/6 |
+| `"hostname"` | `"plotter"` | The board's name on the network, `http://<hostname>-<xx>.local` (see `"mac_suffix"`) |
+| `"mac_suffix"` | `true` | Adds `-` and the last byte of the board's MAC address (`-60` for `…:65:60`, as `esptool` prints it) to the hostname and to the name of its own access point, so several boards sharing one `customization.json` stay apart. The OLED and `/status` show the full name. |
+| `"txpower"` | C3: `13`, others: full power | Wi-Fi transmit power in dBm (2–20). Some ESP32-C3 boards (the small "SuperMini" kind, LED on GPIO 8) can't transmit cleanly at the full 20 dBm: on one, its access point was invisible at 20 dBm and appeared at 17 and below, at 80–87 % signal right next to it, and joining a network failed now and then. If the access point still doesn't show up, try `8.5`; on a good board `20` gives the most range. |
+| `"pins"` | per chip, see the table | Servo pins |
 
 - Arms: inner `L1` = 80 mm, outer `L2` = 80 mm by default; set your lengths in the web page
   (see [Arms and drawing area](#arms-and-drawing-area)).
@@ -66,6 +78,62 @@ the paper lies in front of it, and the default drawing area is X −50…50 mm, 
 
 ## Installing
 
+### flash.sh
+
+`./flash.sh` does the whole installation and later updates (Linux; `pip install --user -r
+requirements.txt` first for esptool, mpremote and mpy-cross):
+
+```
+./flash.sh [options] [port | host]
+
+  port         serial port of the ESP32: /dev/ttyACM0, ttyUSB0, ACM0 ... (default: found by itself)
+  host         update over Wi-Fi at this address, e.g. plotter.local or 192.168.4.1
+  -l, --list   show the ESP32s found on USB and Wi-Fi, change nothing
+  --firmware   (re)install MicroPython by USB; erases the flash, config.json is kept
+  --fw FILE    MicroPython firmware file to install (default: downloaded for the chip found)
+  --wifi       update over Wi-Fi even if an ESP32 is plugged in
+  --py         upload .py sources instead of precompiled .mpy files
+  -y, --yes    don't ask before erasing or uploading
+```
+
+By USB:
+
+- **Finding the board:** it looks at `/dev/ttyACM*` and `/dev/ttyUSB*` and keeps the ports
+  whose USB ID is a usual ESP32 connection: Espressif's built-in USB (`303a`, C3/S3/C6 boards),
+  CP210x (`10c4:ea60`), CH340/CH9102 (`1a86`), FTDI (`0403`). Other devices, e.g. a laptop's
+  mobile modem on `/dev/ttyACM0`, are skipped with a note. If several ports remain it shows a
+  numbered list to choose from; `./flash.sh ACM1` picks one directly.
+- **What's on it:** it asks MicroPython first (`mpremote`): its version, the chip, the MAC (for
+  the board's name, printed as *It will be called 'plotter-60'*) and the board's own
+  `customization.json`. Only if MicroPython doesn't answer does it use `esptool chip-id` to name
+  the chip (ESP32-C3, -S3, -C6 ..., or a classic ESP32); chips without Wi-Fi (ESP32-H2, -P4) are
+  refused. Works with esptool 4 and 5. On boards with native USB (C3, S3, C6), `esptool`'s reset
+  can leave the chip held in reset so that `mpremote` gets no answer; `flash.sh` opens the port
+  once with the control lines released afterwards (and before its first try), which frees it.
+- **MicroPython:** installed only if the board has none, or with `--firmware`. "MicroPython
+  doesn't answer" can also mean a stuck board with settings on it, so erasing it then needs
+  `--firmware` or a typed *y*; `--yes` alone never erases. The firmware
+  (`ESP32_GENERIC_<chip>-20260824-v1.29.0.bin`) is downloaded from micropython.org into
+  `firmware/` and written at the right offset for the chip; `--fw FILE` uses another file (e.g.
+  an S3 build with PSRAM support). Before erasing, the board's `config.json` (your calibration)
+  and, if there is none on the computer to upload instead, its `customization.json` are saved to
+  `backup/` and put back afterwards.
+- **Remembering boards:** the names of boards installed from this folder go into `boards.txt`
+  (not in git), so later Wi-Fi updates find them as `<name>.local`.
+- **Files:** precompiled to `.mpy` when the installed `mpy-cross` matches the board's MicroPython
+  version (otherwise `.py`, with a warning), stale counterparts are deleted, `main.py` goes last,
+  then the board restarts. Nothing is copied without asking (`--yes` skips the questions);
+  answering "no" restarts the board unchanged.
+- `customization.json` is optional (without it the board opens its own access point); if present
+  it's checked first: valid JSON, networks with `ssid` and `password`, an `ap` password of 8–63
+  characters, `"arms"` `"wooden"` or `"3d-printed"`, `"oled"` true/false, `"led"` and `"pins"`
+  well-formed.
+
+Talking to the board over USB stops the running plotter, as Thonny does: `flash.sh` always ends
+with a restart, but don't leave a serial monitor open while plotting.
+
+Over Wi-Fi: see [Updates over Wi-Fi](#updates-over-wi-fi).
+
 ### 1. Flash MicroPython (only once)
 
 Download the firmware from [micropython.org](https://micropython.org/download/):
@@ -87,33 +155,41 @@ update MicroPython*.
 
 ### 2. Copy the files to the board
 
-Three files are needed on the board:
+**Use `./flash.sh`** (see [flash.sh](#flashsh)): it does all of this, including the
+precompiling below. By hand, these files go on the board:
 
 | On your computer | On the board |
 |---|---|
-| `ssd1306.py` | `ssd1306.py` |
-| `main.py` | `main.py` (runs automatically at boot, starts the plotter) |
-| `plotter.py` | `plotter.py` (the plotter) |
-| `rescue.py` | `rescue.py` (Wi-Fi, updates over Wi-Fi, rescue server) |
+| `rescue.py` | `rescue.mpy` (precompiled) (Wi-Fi, updates over Wi-Fi, rescue server) |
+| `plotter.py` | `plotter.mpy` (precompiled) (the plotter) |
+| `ssd1306.py` | `ssd1306.mpy` (precompiled) (display driver) |
 | `index.html` | `index.html` (the web page) |
+| `customization.json` | `customization.json` (optional, see [Wi-Fi](#wi-fi)) |
+| `main.py` | `main.py` (runs automatically at boot, starts the plotter; copy it last) |
 
-The web page is a separate file because the ESP32-C3 has little RAM: MicroPython compiles the
-whole script in memory before running it, and with the page embedded as a string (REV 11) the
-script no longer fit, so nothing ran at all, not even the Wi-Fi. The page is now streamed from
-flash in 1 KB pieces. **Always upload the script and the page of the same revision together.**
-
-With Thonny: open the file, *File → Save as… → MicroPython device*. Or with
-[mpremote](https://docs.micropython.org/en/latest/reference/mpremote.html):
+**Why precompiled:** the ESP32-C3 has little RAM, and MicroPython normally compiles each `.py`
+file on the board before running it, which needs far more memory than running it. Measured with
+MicroPython 1.29 (the Linux build with a limited heap, so relative numbers): REV 10 and REV 15,
+which run on the board, needed about 106 and 88 KB; REV 11, which didn't start at all (not even
+the Wi-Fi), about 148 KB. REV 16 as `.py` sources needs about 133 KB, too close to failing; as
+`.mpy` files about 65 KB. `mpy-cross` (installed by `requirements.txt`) compiles on the computer;
+its version must match the board's MicroPython (1.29 here):
 
 ```sh
-mpremote cp ssd1306.py :ssd1306.py
-mpremote cp main.py :main.py
-mpremote cp plotter.py :plotter.py
-mpremote cp rescue.py :rescue.py
-mpremote cp index.html :index.html
+mpy-cross rescue.py && mpy-cross plotter.py && mpy-cross ssd1306.py
+mpremote rm :rescue.py + rm :plotter.py + rm :ssd1306.py   # if there: a .py is loaded before the .mpy
+mpremote cp rescue.mpy :rescue.mpy + cp plotter.mpy :plotter.mpy + cp ssd1306.mpy :ssd1306.mpy \
+  + cp index.html :index.html + cp main.py :main.py + reset
 ```
 
-Optionally a `customization.json` (see [Wi-Fi](#wi-fi)): `mpremote cp customization.json :customization.json`.
+If the plotter doesn't fit in RAM (or fails for any other reason), the board starts the rescue
+server instead (see [Updates over Wi-Fi](#updates-over-wi-fi)) and `GET /log` shows a
+`MemoryError`. The web page is a separate file for the same reason: with the page embedded as a
+string (REV 11) the script no longer fit. **Always upload the files of the same revision
+together.**
+
+With Thonny you can also save the `.py` files to the board (*File → Save as… → MicroPython
+device*), for experiments: expect less free RAM.
 
 Two more files appear on the board by themselves:
 
@@ -159,26 +235,47 @@ ap.ifconfig(('192.168.10.1', '255.255.255.0', '192.168.10.1', '8.8.8.8'))
 
 Without a `customization.json` on the board it opens the access point above. With one, copied from
 [`customization.example.json`](customization.example.json), it sets its hostname, joins the first listed network
-that is in range, and opens the `ap` access point only if none is. `customization.json` holds passwords:
+that is in range (it scans up to 3 times: a single scan often misses a network that is there), and
+opens the `ap` access point only if none is. Both names get the MAC suffix (see `"mac_suffix"` in
+[Hardware](#hardware)): with `"hostname": "plotter"` and `"ap": {"ssid": "plotter"}` a board
+whose MAC ends in `60` is `plotter-60` on the network and opens the access point `plotter-60`. `customization.json` holds passwords:
 it is in `.gitignore`, keep it out of the repository. Joined to a network, the board gets its
 address from that network's DHCP (shown on the OLED and in the shell); the hostname also works
-as `http://<hostname>.local` where mDNS is available. If no network could be joined, the OLED
-says why (`NO WIFI: not in range: …` or `NO WIFI: could not join …`) and shows the access
-point's name and IP. "Not in range" also means a 5 GHz-only network or a typo in the name: the
+as `http://<hostname>-<xx>.local` where mDNS is available. If no network could be joined, the OLED
+says why: during the boot each failure is shown for 2.5 s (`NO WIFI` / `wrong password`, `not
+found`, `no answer` or `not in range` / the network's name), and afterwards the idle screen
+alternates every 6 s between the reason and the access point's name and IP. The board waits up
+to 30 s per network; it gives up earlier only if "wrong password" or "not found" persists for 10 s
+(the ESP32 reports "wrong password" for a moment while it retries a handshake, so giving up at
+the first report, as an earlier draft did, dropped good connections). If the connection drops later, the
+OLED shows `WIFI LOST` / `rejoining` until it's back. "Not in range" also means a 5 GHz-only network or a typo in the name: the
 ESP32 has 2.4 GHz only, and `/log` lists the networks it did see. If the `ap` settings can't be
-used, the board opens `ESP32-Plotter` / `plotterpassword` instead; `flash.sh` refuses an `ap`
+used, the board opens `ESP32-Plotter-<xx>` / `plotterpassword` instead; `flash.sh` refuses an `ap`
 password shorter than 8 characters and network entries without `ssid` or `password`.
 
 ### Updates over Wi-Fi
 
-`./flash.sh` without the ESP32 on USB uploads the files over Wi-Fi and restarts the board; it
-needs an `ota_password` in `customization.json`, and the first version with this feature goes
-on by USB. It looks for the board at `<hostname>.local`, then at `192.168.4.1` (its own access
-point: connect the computer to that Wi-Fi first), and stops if neither answers;
-`./flash.sh <host>` for another address. It lists the files on the board before and after the
-update and shows the end of its log after the restart. By USB it shows the files and the end
-of the log before erasing the flash, and the files after copying. Each file is written to
-`<name>.tmp` and renamed only when complete, so a cut connection leaves the old file in place.
+`./flash.sh` without the ESP32 on USB (or `./flash.sh --wifi`, or `./flash.sh <host>`) updates the
+board over Wi-Fi; it needs an `ota_password` in `customization.json`, and the first version with
+updates goes on by USB. Before uploading anything it makes sure it found the right thing:
+
+1. It looks for the board at the given host, else at the boards installed from this folder
+   (`boards.txt`, as `<name>.local`), at `<hostname>.local` (a board without the MAC suffix) and
+   at `192.168.4.1` (its own access point: connect the computer to that Wi-Fi first). A device
+   only counts if it answers like the plotter (`/status` with a revision) or like its rescue
+   mode; any other web server at that address is ignored. If several plotters answer, it shows
+   them by name and asks which one.
+2. It refuses while a plot is running, paused or parking (the board refuses too).
+3. It checks the password (`GET /auth`) and gets the board's MicroPython version from it, to
+   precompile matching `.mpy` files. A board from before `GET /auth` is accepted if it can be
+   updated at all; its password is checked with the first file.
+4. It shows what it found and asks before uploading (`--yes` skips the question).
+5. It deletes stale counterparts (e.g. `plotter.py` when uploading `plotter.mpy`), uploads the
+   files with `main.py` last, restarts the board and waits until it answers again with the new
+   revision; if it comes back in rescue mode it prints the end of the log.
+
+Each file is written to `<name>.tmp` and renamed only when complete, so a cut connection leaves
+the old file in place.
 
 If `plotter.py` fails to start (a bad update), `main.py` starts the rescue server from
 `rescue.py` instead: Wi-Fi and updates keep working, every page answers 503 and `GET /log`
@@ -197,19 +294,37 @@ Three lines of 9 characters (the built-in MicroPython font is a fixed 8x8 px, so
 
 | Display | Meaning |
 |---|---|
-| `REV 15.0` / `READY` / IP | Server running |
+| `REV 16.0` / name / IP | Server running on your network, e.g. `plotter-60` and its IP |
+| `REV 16.0` / `AP <name>` / IP | Server running on the board's own access point |
+| `REV 16.0` / `NO WIFI` / reason, alternating with `REV 16.0` / `AP <name>` / IP | Couldn't join the networks from `customization.json` (see [Wi-Fi](#wi-fi)) |
+| `WIFI` / `scanning` / `2/3` | The networks from `customization.json` weren't in the first scan, scanning again |
+| `WIFI` / network / `joining` (then `25 s`, `20 s` ...) | Joining a network at boot |
+| `WIFI LOST` / `rejoining` | Connection dropped, rejoining |
+| `PARKING` / `120/840` | Plot ended or stopped, the arm is on its way to park |
 | `UPLOADING` / `840 pts` | Receiving a drawing |
 | `PLOTTING` / `120/840` / `14%` | Plotting, line 120 of 840 (updated every 5 s) |
 | `PAUSED` / `120/840` | Plot paused |
-| `REV 15.0` / `DONE` (or `STOPPED`, `ERROR`) / `840/840` | Plot ended |
+| `REV 16.0` / `DONE` (or `STOPPED`, `ERROR`) / `840/840` | Plot ended |
 | `S:-45` / `E:90` / `PEN UP` | After a jog or angle command |
 | `NO SERVER` / `PRESS RST` | Port 80 still in use after a soft reboot; press RESET |
 
 If the display stops responding (e.g. after a servo brownout), the code re-initialises it
-automatically (at most every 5 s), and the **Refresh OLED** button forces a full restart.
+automatically (at most every 5 s), and the **Refresh OLED** button forces a full restart. A
+display that wasn't found at boot isn't retried (no I2C traffic on a board without one), except
+with *Refresh OLED*, e.g. after plugging one in.
 
 While a plot runs, the heartbeat dot and scrolling pause (each display update briefly holds up
 the motion), and only the progress is updated every 5 s.
+
+**The board's LED** (GPIO 8 on C3 boards, GPIO 2 on a classic DevKit, see `"led"` in
+[Hardware](#hardware)) tells the same story without a display:
+
+| LED | Meaning |
+|---|---|
+| Slow blink, in step with the OLED's dot (about 1 s on, 1 s off) | Plotter running, idle |
+| Fast blink (about 1.5 per second) | Plotting or parking |
+| Three quick flashes every 2 s | Rescue mode: the plotter failed to start, see `GET /log` |
+| Off or steady | The program isn't running (e.g. stopped by Thonny or `mpremote`) |
 
 ---
 
@@ -255,11 +370,14 @@ Pressing *Plot Drawing* (or *Draw Test Square*):
 3. While the page is open it shows a progress bar with **Pause/Resume** and **Stop**.
    Pausing lifts the pen; resuming lowers it again and carries on from the same point. A
    stopped plot can't be resumed.
+   After the last line, or after *Stop*, the arm returns to its park pose at drawing speed,
+   which takes a few seconds; meanwhile the page says *Plot ended at n / total, parking the
+   arm...* and the board still refuses other motion and settings.
 4. If you reopen the page during a plot (e.g. after the phone slept), it picks up the progress
    display again.
 
-While a plot runs, the board refuses motion commands (jog, tests, other plots) with
-*busy: a plot is in progress*.
+While a plot runs, is paused or parks, the board refuses motion commands (jog, tests, other
+plots, *Apply Config*), restarts and file updates with *busy: a plot is in progress*.
 
 ### Keeping the screen on
 
@@ -290,7 +408,7 @@ pulse_us = park_pw + (angle_deg − park_angle) × slope
 | S1 Park | `s1_ang` | −90 | Shoulder angle (°) at which the shoulder servo gets `s1_pw` (1500 µs) |
 | S1 Slope | `s1_slope` | −10 | µs per degree for the shoulder (negative = mounted reversed) |
 | S2 Park | `s2_ang` | 90 | Elbow angle (°) at `s2_pw` (1500 µs) |
-| S2 Slope | `s2_slope` | −10 | µs per degree for the elbow: negative with the elbow servo on the upper arm (3D-printed arms), positive with it on the lower arm (wooden arms) |
+| S2 Slope | `s2_slope` | +10, or −10 with `"arms": "3d-printed"` | µs per degree for the elbow: negative with the elbow servo on the upper arm (3D-printed arms), positive with it on the lower arm (wooden arms); the default comes from `"arms"` in `customization.json` |
 | Pen Up / Pen Down | `pen_up`, `pen_down` | 1450 / 1850 | Pen servo pulse widths (µs) |
 | Speed | `speed` | 25 | Drawing speed in mm/s |
 | S1 / S2 Hysteresis | `s1_hyst`, `s2_hyst` | 0 | Backlash correction in µs (see below) |
@@ -504,10 +622,12 @@ All on port 80. Every response closes the connection.
 |---|---|
 | `GET /` | The web page (`index.html` from flash) |
 | `GET /config` | Current settings as JSON |
-| `GET /status` | `{"rev": revision, "job": state, "line": n, "total": n, "s": deg, "e": deg, "p": 0/1}`; state is `idle`, `uploading`, `running`, `paused`, `done`, `stopped` or `error` |
+| `GET /status` | `{"rev": revision, "job": state, "line": n, "total": n, "s": deg, "e": deg, "p": 0/1}`; state is `idle`, `uploading`, `running`, `paused`, `parking` (plot ended, arm returning to park), `done`, `stopped` or `error` |
 | `POST /cmd` body = command | `OK S=<shoulder> E=<elbow> P=<0/1>` or `400 ERR <message>` |
 | `POST /job` body = G-code lines | Appends to the job being uploaded (max 8 KB per request) |
-| `PUT /file/<name>`, basic auth `ota:<ota_password>` | Writes the file to flash (`<name>.tmp`, then renamed) |
+| `PUT /file/<name>`, basic auth `ota:<ota_password>` | Writes the file to flash (`<name>.tmp`, then renamed); refused (409) during a plot |
+| `DELETE /file/<name>`, basic auth | Deletes the file (used to remove a `.py` when its `.mpy` is uploaded) |
+| `GET /auth`, basic auth | `OK <MicroPython version>` if the password is right, else 401 (used by `flash.sh`) |
 | `POST /reset`, basic auth `ota:<ota_password>` | Restarts the board |
 | `GET /files` | Files on the board's flash, one `size name` line each |
 | `GET /log` | Boot (with `machine.reset_cause()`: 1 power on, 2 reset button or `/reset`, 3 watchdog, 5 soft reset), Wi-Fi, update and error events, one per line, seconds since boot first; kept in flash (`log.txt`, rotated to `log.old` at 8 KB) |
@@ -578,11 +698,16 @@ The drawing area is no longer a constant in the page: it comes from the board's 
 | Symptom | Cause / fix |
 |---|---|
 | Thonny's shell shows nothing | The program was started at boot before Thonny connected. Run it with F5 from Thonny instead. |
-| No Wi-Fi network at all, OLED blank or unchanged after boot | The script didn't start. Run it with F5 in Thonny to see the error. `MemoryError` means the script is too big for the RAM (as REV 11 was); otherwise check that `ssd1306.py` is on the board. |
+| No Wi-Fi network at all, OLED blank or unchanged after boot | `main.py` or `rescue.py` didn't start. Run `main.py` with F5 in Thonny to see the error, or reflash with `./flash.sh`. |
+| LED flashes three times every 2 s, pages answer "The plotter failed to start" | Rescue mode: `http://<board>/log` shows the error. `MemoryError`: the plotter was uploaded as `.py` sources and doesn't fit in RAM; update with `./flash.sh` (installs precompiled `.mpy` files). Anything else: a broken update; fix it and update over Wi-Fi. |
+| `flash.sh` skips your board ("not a usual ESP32 adapter") | Its USB-serial chip isn't in the list: give the port explicitly, `./flash.sh /dev/ttyUSB0`. |
+| `flash.sh` says "No plotter found" over Wi-Fi | Not on the same network, `<hostname>.local` not resolved (needs avahi/nss-mdns), or the board is on its own AP: connect to it, or give the IP shown on the OLED. |
 | Page shows "index.html is missing on the board" | Upload `index.html` to the board. |
 | Page looks outdated or buttons don't work after an update | Script and page are from different revisions; upload both from the same revision and reload the page. |
 | Wi-Fi connects but the page doesn't load | Most often Thonny stopped the program (OLED dot not blinking): reset the board with Thonny disconnected. Otherwise use `http://` explicitly and turn off mobile data. |
-| Page loads sometimes, connection unstable | These small C3 boards have weak antennas; try `ap.config(txpower=8.5)` after `ap.active(True)`. |
+| The board's access point doesn't show up at all, or joining your Wi-Fi fails now and then ("wrong password" with the right one) | The board can't transmit cleanly at high power: set `"txpower": 8.5` in `customization.json` (C3 boards already default to 13). |
+| Page loads sometimes, connection unstable | Same cause: lower `"txpower"`. |
+| `flash.sh` says "MicroPython doesn't answer" on a board that has it | The program on it is stuck, or a terminal (Thonny) has the port: close it, unplug and replug the board, try again. `--firmware` reinstalls it (settings are saved first). |
 | OLED shows `NO SERVER` | Port 80 still held after a soft reboot: press RESET. |
 | OLED blank | Check the shell: `OLED HW I2C scan: []` means no display found (wiring/power). Any other error: re-upload the original `ssd1306.py`. |
 | Board resets or OLED glitches when servos move | Brownout: check the capacitor (polarity, firmly in the breadboard), use a stronger USB power supply, or power the servos separately. |
@@ -609,8 +734,12 @@ The drawing area is no longer a constant in the page: it comes from the board's 
 | `index.html` | Its web page |
 | `ssd1306.py` | OLED driver (MicroPython standard driver) |
 | `customization.example.json` | Template for the optional `customization.json` |
+| `flash.sh` | Installs and updates the board by USB or Wi-Fi, see [flash.sh](#flashsh) |
+| `requirements.txt` | The computer-side tools: esptool, mpremote, mpy-cross |
+| `README.md`, `PARTS.md` | Build guide and parts list |
+| `images/`, `3d-prints/` | Pictures for the README (drawn by `images/draw.py`) and the printed parts |
 
-Revisions (each in its own file, older ones kept for fallback):
+Revisions (up to 15 each in its own file in the original working folder; from 16 on in git):
 
 | File | Changes |
 |---|---|
@@ -628,3 +757,4 @@ Revisions (each in its own file, older ones kept for fallback):
 | 13 | Image to Plot: preview updates on every setting change; loaded image kept in the page's own canvas (mobile browsers could discard it, so re-convert did nothing); Darkness accepts a decimal comma; errors shown instead of failing silently; "nothing to draw" clears the preview |
 | 14 | Option to rotate drawings 90° when that makes them bigger (portrait images on the landscape area); status line shows the final size in mm |
 | 15 | Text section: up to 3 lines in Script, Block or Block bold Hershey single-stroke fonts, word wrap, largest-that-fits or fixed letter height, German umlauts; plot button renamed *Plot Drawing* |
+| 16 | Split into `main.py`, `plotter.py`, `rescue.py` (colleague's branch: joining a Wi-Fi via `customization.json`, updates over Wi-Fi with a rescue server, event log, classic ESP32 and other chips, park pose, view from the paper side, ramped glide, servos started one after another); installed as precompiled `.mpy` files (half the RAM); new `flash.sh`: finds the ESP32 by USB ID with a menu, keeps MicroPython and the calibration unless asked, any ESP32 with Wi-Fi, esptool 4 and 5, Wi-Fi updates only after checking it's the plotter and the password is right; `"arms"` setting for the elbow default; Wi-Fi errors shown on the OLED in words (wrong password, not found ...), alternating idle screen, connection-lost notice; the board's LED blinks as a heartbeat (fast while plotting, triple flash in rescue mode); "parking" state after a plot; display not retried when there is none; updates and restarts refused during a plot; board names with the MAC's last byte (`plotter-60`) for the hostname and the own access point; Wi-Fi transmit power setting (13 dBm default on C3: fixes boards whose access point was invisible); up to 3 Wi-Fi scans and no giving up on a momentary "wrong password"; `flash.sh` asks MicroPython before using esptool, frees boards left stuck by esptool's reset, never erases on `--yes` alone and saves the board's settings before erasing, remembers installed boards |

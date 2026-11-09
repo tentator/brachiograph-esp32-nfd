@@ -14,5 +14,6 @@
     "ssid": "plotter",
     "password": "at-least-8-characters"
   },
-  "ota_password": "for-updates-over-wifi"
+  "ota_password": "for-updates-over-wifi",
+  "arms": "3d-printed"
 }

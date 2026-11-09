@@ -1,2 +1,7 @@
 customization.json
 *.bin
+firmware/
+backup/
+esptool
+mpremote
+boards.txt

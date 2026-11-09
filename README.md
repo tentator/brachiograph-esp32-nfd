@@ -1,5 +1,8 @@
 # BrachioGraph: a drawing robot with an ESP32
 
+> **Looking for the details?** Everything about calibration, the web page, Wi-Fi, updates,
+> other ESP32 boards, the HTTP API and troubleshooting is in **[EXPERT.md](EXPERT.md)**.
+
 A robot arm with two joints holds a pen and draws what you send it from a
 browser: pictures, photos or text. This guide takes you from plugging it
 together to your first drawing.
@@ -18,7 +21,7 @@ cd brachiograph-esp32-nfd
 pip install --user -r requirements.txt
 ```
 
-The last line installs the tools that talk to the ESP32 (esptool, mpremote).
+The last line installs the tools that talk to the ESP32 (esptool, mpremote, mpy-cross).
 
 ## 2. Enter your Wi-Fi
 
@@ -28,9 +31,12 @@ cp customization.example.json customization.json
 
 Open `customization.json` and fill in:
 
-- `hostname`: your robot's name
+- `hostname`: your robot's name (the robot adds a dash and two characters of its own,
+  e.g. `node11-60`, so two robots never get the same name)
 - `networks`: the Wi-Fi networks it should join, the most important first
 - `ota_password`: a password of your choice for updates over Wi-Fi
+- `arms`: leave it at `"3d-printed"` for the printed arms from [PARTS.md](PARTS.md)
+  (`"wooden"` if the elbow servo sits on the lower arm instead)
 
 `customization.json` holds passwords and stays on your computer: Git never uploads it.
 
@@ -47,11 +53,12 @@ cable into the ESP32 and into the computer.
 ./flash.sh
 ```
 
-It downloads MicroPython, puts it on the ESP32, then copies the drawing
-program, the web page and your `customization.json`. It finds the ESP32 on
-any `/dev/ttyACM*` or `/dev/ttyUSB*` port; if several are plugged in, give its
-port: `./flash.sh ACM1` (or `/dev/ttyACM1`). Later, without the
-USB cable, the same command updates the robot over Wi-Fi.
+It finds the ESP32 among the USB ports by itself (if several could be one, it
+asks which), puts MicroPython on it the first time, then copies the drawing
+program, the web page and your `customization.json`. It asks before changing
+anything; answer `y`. Later, without the USB cable, the same command updates
+the robot over Wi-Fi: it first checks that it really found your robot and that
+the password is right. `./flash.sh --help` shows the other options.
 
 ## 5. Build the robot
 
@@ -131,9 +138,18 @@ TODO: photo of the finished robot, wired and ready for calibration.
 ## 9. Connect
 
 Put your laptop on the same Wi-Fi as the robot, open a browser and go to
-`http://<hostname>.local` with the `hostname` from your `customization.json`,
-for example `http://node11.local`. Type the `http://` too. The robot's page
-opens.
+`http://<name>.local` with the name that `./flash.sh` printed at the end and
+that the display shows, for example `http://node11-60.local`. Type the
+`http://` too. The robot's page opens.
+
+The small display on the ESP32 helps: it shows the robot's address when it's
+ready, and says what went wrong if it couldn't join your Wi-Fi (for example
+*wrong password* or *not in range*). Then the robot opens its own Wi-Fi
+instead (named like the robot, e.g. `node11-60`), and the display shows its
+name and address. If you can't see that Wi-Fi at all, add `"txpower": 8.5`
+to `customization.json` and flash again: some boards can't send at full power. The blinking dot in the
+display's corner and the LED on the board blink while the robot program
+runs.
 
 ## 10. Calibrate
 

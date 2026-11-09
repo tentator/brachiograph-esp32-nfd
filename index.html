@@ -120,7 +120,7 @@
     <div>S1 Park: <input class="cfg" type="number" id="s1_ang" value="-90.0" step="1"></div>
     <div>S2 Park: <input class="cfg" type="number" id="s2_ang" value="90.0" step="1"></div>
     <div>S1 Slope: <input class="cfg" type="number" id="s1_slope" value="-10.0" step="0.5"></div>
-    <div>S2 Slope: <input class="cfg" type="number" id="s2_slope" value="-10.0" step="0.5"></div>
+    <div>S2 Slope: <input class="cfg" type="number" id="s2_slope" value="10.0" step="0.5"></div>
     <div>Pen Up (us): <input class="cfg" type="number" id="pen_up" value="1450" step="10"></div>
     <div>Pen Down (us): <input class="cfg" type="number" id="pen_down" value="1850" step="10"></div>
   </div>
@@ -282,12 +282,16 @@ async function getStatus() {
 function showStatus(st) {
   currentS = Math.round(st.s); currentE = Math.round(st.e); penDown = st.p === 1;
   updateReadout();
-  const active = st.job === 'running' || st.job === 'paused';
+  // "parking": the plot has ended (or was stopped) and the arm is still on its way to park
+  const active = ['running', 'paused', 'parking'].includes(st.job);
   const pct = st.total ? Math.floor(st.line * 100 / st.total) : 0;
   document.getElementById('jobPanel').style.display = active ? 'block' : 'none';
   document.getElementById('jobProgress').value = pct;
   document.getElementById('pauseBtn').innerText = st.job === 'paused' ? 'Resume' : 'Pause';
-  if (active) {
+  document.getElementById('pauseBtn').disabled = st.job === 'parking';
+  if (st.job === 'parking') {
+    status.innerText = `Plot ended at ${st.line} / ${st.total}, parking the arm...`;
+  } else if (active) {
     status.innerText = `${st.job === 'paused' ? 'Paused' : 'Plotting'}: ${st.line} / ${st.total} (${pct}%)`;
   } else if (jobActive) {
     status.innerText = st.job === 'done' ? "Plot finished!" : `Plot ${st.job} at ${st.line} / ${st.total}`;
@@ -331,7 +335,7 @@ getStatus().then(st => {
   updateReadout();
   document.getElementById('rev').innerText = st.rev;
   document.title = 'Plotter ' + st.rev;
-  if (st.job === 'running' || st.job === 'paused') pollStatus();
+  if (['running', 'paused', 'parking'].includes(st.job)) pollStatus();
 });
 
 // ---------- Keep the screen on while plotting ----------
