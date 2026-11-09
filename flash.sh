@@ -8,8 +8,18 @@ files="rescue.py plotter.py ssd1306.py index.html customization.json main.py"  #
 [[ -f customization.json ]] || { echo "customization.json missing: cp customization.example.json customization.json and fill it in" >&2; exit 1; }
 python3 -c "import json; json.load(open('customization.json'))" || { echo "customization.json is not valid JSON, see the error above" >&2; exit 1; }
 get() { python3 -c "import json, sys; print(json.load(open('customization.json')).get(sys.argv[1], ''))" "$1"; }
-# ESP32-C3 boards show up as /dev/ttyACM0, classic ESP32 boards with a USB-serial chip as /dev/ttyUSB0
-target=${1:-$(ls /dev/ttyACM0 /dev/ttyUSB0 2>/dev/null | head -1)}
+# ESP32-C3 boards show up as /dev/ttyACM*, classic ESP32 boards with a USB-serial chip as /dev/ttyUSB*
+# The port can be given in full (/dev/ttyACM1) or short (ttyACM1, ACM1, USB0)
+if [[ -n ${1:-} ]]; then
+  target=$1
+  for dev in "/dev/$1" "/dev/tty$1"; do [[ $1 != /* && -e $dev ]] && { target=$dev; break; }; done
+else
+  ports=$(ls /dev/ttyACM* /dev/ttyUSB* 2>/dev/null || true)
+  if (( $(wc -w <<<"$ports") > 1 )); then
+    echo "Several USB ports found, pick one: ./flash.sh <port>" >&2; echo "$ports" >&2; exit 1
+  fi
+  target=$ports
+fi
 
 if [[ -n $target && -e $target ]]; then
   if esptool --port "$target" chip-id | grep -q "ESP32-C3"; then

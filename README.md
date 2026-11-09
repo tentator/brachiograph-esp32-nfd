@@ -48,8 +48,9 @@ cable into the ESP32 and into the computer.
 ```
 
 It downloads MicroPython, puts it on the ESP32, then copies the drawing
-program, the web page and your `customization.json`. If your ESP32 is not on
-`/dev/ttyACM0`, give its port: `./flash.sh /dev/ttyACM1`. Later, without the
+program, the web page and your `customization.json`. It finds the ESP32 on
+any `/dev/ttyACM*` or `/dev/ttyUSB*` port; if several are plugged in, give its
+port: `./flash.sh ACM1` (or `/dev/ttyACM1`). Later, without the
 USB cable, the same command updates the robot over Wi-Fi.
 
 ## 5. Build the robot
