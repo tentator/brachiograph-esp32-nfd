@@ -527,7 +527,9 @@ Commands for `POST /cmd`:
 | `TEST_OLED` | Re-initialise the display |
 | `DONE` | Lift the pen and show DONE |
 
-While a job runs, `G0`, `G1`, `ANG`, the tests, `DONE`, `JOB_BEGIN` and `JOB_START` are refused.
+While a job runs or a single command is still moving the arm, `G0`, `G1`, `ANG`, `PARK`, `CFG`, the
+tests, `DONE`, `JOB_BEGIN` and `JOB_START` are refused. A `G0`/`G1` target farther than `L1 + L2`
+from the shoulder is refused with `out of reach`; in a job it ends the plot with `error`.
 Single `G0`/`G1` commands still work without a job (optionally followed by `|text` to show on the
 OLED, e.g. `G1 X10 Y100|5/200`).
 
