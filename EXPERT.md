@@ -33,16 +33,17 @@ Current version: **`plotter.py`** (REV 15.0) with its web page **`index.html`**,
 
 | Part | ESP32-C3 OLED board (also C2, C5, C6) | Classic ESP32 DevKit | ESP32-S2 / S3 |
 |---|---|---|---|
-| Shoulder servo (inner arm) | GPIO **0** | GPIO **25** | GPIO **4** |
-| Elbow servo (outer arm) | GPIO **1** | GPIO **26** | GPIO **5** |
-| Pen-lift servo | GPIO **3** | GPIO **27** | GPIO **6** |
+| Shoulder servo (inner arm) | GPIO **0** | GPIO **26** | GPIO **4** |
+| Elbow servo (outer arm) | GPIO **1** | GPIO **18** | GPIO **5** |
+| Pen-lift servo | GPIO **3** | GPIO **19** | GPIO **6** |
 | OLED SSD1306 72x40 (on board) | C3 only: I2C SDA = GPIO **5**, SCL = GPIO **6**, address 0x3C (0x3D also detected) | none | none |
 
 Wire colours used in the README's wiring diagram (`images/wiring.png`, drawn by
 `images/draw.py`): black GND, red +5 V, green shoulder, yellow elbow, white pen.
 
 The script picks the column from the chip it runs on; `"pins"` in `customization.json`
-overrides single servo pins, e.g. `"pins": {"shoulder": 4}`.
+overrides single servo pins, e.g. `"pins": {"shoulder": 4}`. `"oled": false` switches the
+display off on a C3 board that has none (nothing touches GPIO 5/6 then).
 
 - Arms: inner `L1` = 80 mm, outer `L2` = 80 mm by default; set your lengths in the web page
   (see [Arms and drawing area](#arms-and-drawing-area)).
@@ -543,7 +544,7 @@ In the script:
 
 | Constant | Default | Purpose |
 |---|---|---|
-| `PIN_SHOULDER`, `PIN_ELBOW`, `PIN_PEN` | 0, 1, 3 (C2/C3/C5/C6), 25, 26, 27 (classic), 4, 5, 6 (S2/S3) | Servo GPIOs; `"pins"` in `customization.json` overrides them |
+| `PIN_SHOULDER`, `PIN_ELBOW`, `PIN_PEN` | 0, 1, 3 (C2/C3/C5/C6), 26, 18, 19 (classic), 4, 5, 6 (S2/S3) | Servo GPIOs; `"pins"` in `customization.json` overrides them |
 | `OLED_SDA`, `OLED_SCL`, `OLED_W`, `OLED_H` | 5, 6, 72, 40 | Display |
 | `PEN_SETTLE_MS` | 150 | Wait after pen up/down before moving |
 | `FRAME_MS` | 20 | Servo frame period (50 Hz); one motion step per frame |
