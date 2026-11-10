@@ -26,12 +26,12 @@ def chip():
     return os.uname().machine.split()[-1].replace("-", "")
 
 def servo_pins():
-    # (shoulder, elbow, pen): classic ESP32 (WROOM) DevKit GPIO 26/18/19 (GPIO 34-39 are input
+    # (shoulder, elbow, pen): classic ESP32 (WROOM) DevKit GPIO 25/26/27 (GPIO 34-39 are input
     # only), ESP32-S2/S3 GPIO 4/5/6 (26 and up are flash pins there), ESP32-C2/C3/C5/C6 GPIO 0/1/3
     # (the C3 OLED board's wiring);
     # "pins" in customization.json overrides any of them, e.g. {"shoulder": 4} if GPIO 0 was damaged
     pins = dict(zip(("shoulder", "elbow", "pen"),
-                    {"ESP32": (26, 18, 19), "ESP32S2": (4, 5, 6), "ESP32S3": (4, 5, 6)}.get(chip(), (0, 1, 3))))
+                    {"ESP32": (25, 26, 27), "ESP32S2": (4, 5, 6), "ESP32S3": (4, 5, 6)}.get(chip(), (0, 1, 3))))
     pins.update(custom.get("pins", {}))
     return pins["shoulder"], pins["elbow"], pins["pen"]
 
