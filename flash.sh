@@ -90,9 +90,11 @@ sys.exit(1 if errors else 0)
 PY
   FILES_EXTRA=customization.json
 else
-  echo "No customization.json: the board opens its own Wi-Fi 'ESP32-Plotter' (password plotterpassword)."
-  echo "To join your Wi-Fi instead: cp customization.example.json customization.json and fill it in."
+  echo "No customization.json here. The board keeps the one it already has, if any; without one it"
+  echo "opens its own Wi-Fi 'ESP32-Plotter-<xx>' (password plotterpassword) and can't be updated over Wi-Fi."
+  echo "To set your Wi-Fi: cp customization.example.json customization.json and fill it in."
   FILES_EXTRA=
+  if [[ $LIST == 0 ]]; then ask "Continue without customization.json?" || die "nothing changed"; fi
 fi
 REV=$(grep -oE '^REVISION = "[^"]+"' plotter.py | cut -d'"' -f2)
 
@@ -250,6 +252,14 @@ identify() {  # esptool chip-id: sets variant ("C3", "S3", "" for a classic ESP3
 }
 usb_flash() {
   need "$ESPTOOL" esptool; need "$MPREMOTE" mpremote
+  if [[ ! -r $PORT || ! -w $PORT ]]; then
+    # Serial ports belong to the group "dialout" (Fedora, Debian, Ubuntu; "uucp" on Arch)
+    local grp; grp=$(stat -c %G "$PORT" 2>/dev/null || echo dialout)
+    if id -nG | tr ' ' '\n' | grep -qx "$grp"; then
+      die "no access to $PORT although you are in the group '$grp': log out and in again (or reboot), then retry"
+    fi
+    die "no access to $PORT: run  sudo usermod -aG $grp $USER  then log out and in again (no need for sudo ./flash.sh)"
+  fi
   # Talking to MicroPython over USB stops the running plotter (as Thonny does): restart the
   # board if we end up changing nothing
   abort() { timeout 20 $MPREMOTE connect "$PORT" reset >/dev/null 2>&1 || true; die "$1"; }
@@ -353,7 +363,7 @@ for f in ($stale):
         pass" + "${args[@]}" exec "print('Files on the ESP32 now:')" + fs ls + reset
   remember "$name"
   say "Done: the ESP32 restarts with $REV as '$name'."
-  local ap sfx; ap=$(custom ap | grep -oE "'ssid': '[^']*'" | cut -d"'" -f4)
+  local ap sfx; ap=$(custom ap | grep -oE "'ssid': '[^']*'" | cut -d"'" -f4 || true)
   sfx=${name#"${hn:-plotter}"}
   if [[ -n $(custom networks) ]]; then
     echo "When it has joined your Wi-Fi: http://$name.local (or the IP on its OLED)."

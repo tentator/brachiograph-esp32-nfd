@@ -146,7 +146,46 @@
     <button class="alt" onclick="autoFitBed()">Auto-fit Area to Arms</button>
   </div>
   <div style="font-size:12px; color:#555; margin-bottom:6px;">Auto-fit finds the largest A-paper-shaped area the arms can reach within the servo limits, using the calibration above. Check it, then Apply.</div>
+  <div id="areaWarn" style="font-size:13px; color:#b45309; margin:6px 0;"></div>
   <button class="alt" style="width:100%;" onclick="applyConfig()">Apply Config</button>
+</div>
+
+<div class="card">
+  <h4>8. Precise Calibration (optional)</h4>
+  <div style="font-size:12px; color:#555; margin-bottom:6px;">
+    For more precise drawings: measure where each servo really is, on the BrachioGraph template
+    (<a href="https://www.brachiograph.art/_downloads/94e7b4ab642ebc644e516e616c26aaa3/template-grid.pdf">template-grid.pdf</a>,
+    printed at 100 %, made for 80 mm arms). Lay the robot on it with the shoulder pivot exactly on 0,0.
+    The page names a line; move the arm onto it with the fine buttons, then press <b>Here</b>.
+    The measured points replace S1/S2 Park and Slope.</div>
+  <div class="readout" id="calInfo">Shoulder: Park/Slope | Elbow: Park/Slope</div>
+  <div style="font-size:13px; margin:4px 0;"><label><input type="checkbox" id="calBoth">
+    Approach each line from both sides (twice the work; also measures the backlash for the hysteresis correction)</label></div>
+  <div class="btn-row">
+    <button onclick="calStart(0)">Calibrate Shoulder</button>
+    <button onclick="calStart(1)">Calibrate Elbow</button>
+    <button class="alt" onclick="calClear()">Delete Measured Points</button>
+  </div>
+  <div id="calPanel" style="display:none; border:1px solid #e2e8f0; border-radius:6px; padding:8px; margin:6px 0;">
+    <div id="calTarget" style="font-weight:bold; margin-bottom:4px;"></div>
+    <div id="calHint" style="font-size:13px; color:#555; margin-bottom:4px;"></div>
+    <div class="readout" id="calPw">-</div>
+    <div class="btn-row">
+      <button onclick="calNudge(-20)">-20 &micro;s</button><button onclick="calNudge(-5)">-5</button><button onclick="calNudge(-1)">-1</button>
+      <button onclick="calNudge(1)">+1</button><button onclick="calNudge(5)">+5</button><button onclick="calNudge(20)">+20 &micro;s</button>
+    </div>
+    <div class="btn-row">
+      <button class="success" onclick="calHere()">Here</button>
+      <button class="alt" onclick="calSkip()">Skip This Line</button>
+      <button class="danger" onclick="calCancel()">Cancel</button>
+    </div>
+  </div>
+  <h4>Check</h4>
+  <div class="btn-row">
+    <button class="success" onclick="drawGrid()">Draw 1 cm Grid</button>
+  </div>
+  <div style="font-size:12px; color:#555;">Draws the drawing area's 1 cm grid lines in the robot's own coordinates: on the
+    template they should land on the printed grid. Where they don't, you see how far off the robot is.</div>
 </div>
 
 <script>
@@ -187,6 +226,8 @@ async function loadConfig() {
   canvas.height = Math.max(100, Math.min(500, Math.round(canvas.width * (BED.maxY - BED.minY) / (BED.maxX - BED.minX))));
   resetCanvas();
   if (lastDrawing) buildQueue(...lastDrawing);
+  showCalInfo();
+  checkArea();
 }
 loadConfig();
 
@@ -382,24 +423,63 @@ function jointAngles(x, y, L1, L2) {
   return [(Math.asin(x / h) - inner) * 180 / Math.PI, 180 - outer * 180 / Math.PI];
 }
 
+// Joint angle -> pulse as the board computes it (plotter.py pulse()): through the measured
+// points if there are two or more, else Park + Slope
+function calPulse(joint, deg, c) {
+  const t = (joint === 0 ? c.s1_table : c.s2_table) || [];
+  if (t.length >= 2) {
+    let i = 1;
+    while (i < t.length - 1 && deg > t[i][0]) i++;
+    const [a0, p0] = t[i - 1], [a1, p1] = t[i];
+    return p0 + (deg - a0) * (p1 - p0) / (a1 - a0);
+  }
+  return joint === 0 ? c.s1_pw + (deg - c.s1_ang) * c.s1_slope : c.s2_pw + (deg - c.s2_ang) * c.s2_slope;
+}
+
 function areaReachable(x0, y0, w, h, c) {
   const N = 20;
   for (let i = 0; i <= N; i++) for (let j = 0; j <= N; j++) {
     if (i > 0 && i < N && j > 0 && j < N) continue;  // perimeter is enough
     const a = jointAngles(x0 + w * i / N, y0 + h * j / N, c.L1, c.L2);
     if (!a || a[1] < 25 || a[1] > 150) return false;
-    const pw1 = c.s1_pw + (a[0] - c.s1_ang) * c.s1_slope;
-    const pw2 = c.s2_pw + (a[1] - c.s2_ang) * c.s2_slope;
+    const pw1 = calPulse(0, a[0], c), pw2 = calPulse(1, a[1], c);
     if (pw1 < 800 || pw1 > 2200 || pw2 < 800 || pw2 > 2200) return false;
   }
   return true;
+}
+
+// Warns when part of the saved drawing area is beyond the servos' limits (the board clips
+// pulses to 750-2250 us, so drawings there come out squashed) or where the arm is nearly
+// straight or folded (imprecise)
+function checkArea() {
+  const warn = document.getElementById('areaWarn');
+  const c = boardCfg;
+  if (!c.L1) return;
+  let worst = null, unreachable = false, awkward = false;
+  const N = 12;
+  for (let i = 0; i <= N; i++) for (let j = 0; j <= N; j++) {
+    const a = jointAngles(BED.minX + (BED.maxX - BED.minX) * i / N, BED.minY + (BED.maxY - BED.minY) * j / N, c.L1, c.L2);
+    if (!a) { unreachable = true; continue; }
+    if (a[1] < 15 || a[1] > 165) awkward = true;
+    for (const [joint, name] of [[0, 'shoulder'], [1, 'elbow']]) {
+      const pw = calPulse(joint, a[joint], c);
+      const over = pw < 750 ? 750 - pw : pw > 2250 ? pw - 2250 : 0;
+      if (over > 0 && (!worst || over > worst.over)) worst = { over, name, pw };
+    }
+  }
+  const msgs = [];
+  if (unreachable) msgs.push("part of the drawing area is out of the arms' reach");
+  if (worst) msgs.push(`the ${worst.name} would need ${Math.round(worst.pw)} \u00b5s there, beyond the servo limit (750-2250 \u00b5s): drawings come out squashed in that part`);
+  if (awkward) msgs.push("in a corner the elbow is almost straight or folded, which is imprecise");
+  warn.innerText = msgs.length ? "\u26a0 Drawing area: " + msgs.join("; ") + ". Auto-fit Area to Arms finds an area that fits." : "";
 }
 
 function autoFitBed() {
   const c = { L1: cfgField('L1'), L2: cfgField('L2'),
               s1_pw: boardCfg.s1_pw || 1500, s2_pw: boardCfg.s2_pw || 1500,
               s1_ang: cfgField('s1_ang'), s2_ang: cfgField('s2_ang'),
-              s1_slope: cfgField('s1_slope'), s2_slope: cfgField('s2_slope') };
+              s1_slope: cfgField('s1_slope'), s2_slope: cfgField('s2_slope'),
+              s1_table: boardCfg.s1_table, s2_table: boardCfg.s2_table };
   const reach = c.L1 + c.L2;
   let best = null;
   for (let y0 = 5; y0 < reach; y0 += 4) {
@@ -420,6 +500,180 @@ function autoFitBed() {
   document.getElementById('bed_miny').value = Math.round(best.y0);
   document.getElementById('bed_maxy').value = Math.round(best.y0 + h) - 1;
   status.innerText = `Auto-fit: ${Math.round(best.w)} x ${Math.round(h)} mm - press Apply Config to use it`;
+}
+
+// ---------- Precise calibration on the BrachioGraph template (optional) ----------
+// Shoulder: the upper arm (shoulder pivot -> elbow pivot) onto the red lines.
+// Elbow: with the shoulder at 0 deg (upper arm straight ahead, elbow over 0,8), the forearm
+// (elbow pivot -> pen) onto the blue lines, which give the angle relative to the upper arm.
+const CAL_TARGETS = [[-120, -105, -90, -75, -60, -45, -30, -15, 0, 15],
+                     [15, 30, 45, 60, 75, 90, 105, 120, 135, 150]];
+const CAL_NAMES = ['Shoulder', 'Elbow'];
+let cal = null;  // {joint, i, both, side, points: [[angle, pulse]], backlash: [], first, s, e}
+let calBusy = false;  // a calibration is running or still saving/parking
+
+function showCalInfo() {
+  const d = n => {
+    const t = boardCfg['s' + n + '_table'] || [];
+    return t.length >= 2 ? `${t.length} measured points (${t[0][0]}\u00b0 to ${t[t.length - 1][0]}\u00b0)` : 'Park/Slope';
+  };
+  document.getElementById('calInfo').innerText = `Shoulder: ${d(1)} | Elbow: ${d(2)}`;
+}
+
+// The board's limits for the PW command (calibration only; drawing stays within 750-2250 us)
+const PW_MIN = 500, PW_MAX = 2500;
+
+async function calMove() {
+  // Stay within the board's limits, or the page's number would no longer match the servo
+  cal.s = Math.max(PW_MIN, Math.min(PW_MAX, cal.s));
+  cal.e = Math.max(PW_MIN, Math.min(PW_MAX, cal.e));
+  const pw = cal.joint === 0 ? cal.s : cal.e;
+  document.getElementById('calPw').innerText = `${CAL_NAMES[cal.joint]}: ${Math.round(pw)} \u00b5s` +
+    (pw <= PW_MIN || pw >= PW_MAX ? "  (servo limit: if the line can't be reached, skip it)"
+     : pw < 650 || pw > 2350 ? "  (near the servo's end: if it buzzes, go back and skip this line)" : "");
+  // The board takes one moving command at a time: send one after another, each time to the
+  // latest target (absolute pulses), so fast clicks are neither refused nor lost
+  if (calSending) { calAgain = true; return calSending; }
+  calSending = (async () => {
+    do {
+      calAgain = false;
+      if (!cal) break;
+      await sendCmd(`PW S=${Math.round(cal.s)} E=${Math.round(cal.e)}`);
+    } while (calAgain);
+  })();
+  try { await calSending; } finally { calSending = null; }
+}
+let calSending = null, calAgain = false;
+async function calIdle() { while (calSending) await calSending; }  // last move done
+
+function calShow() {
+  const angle = CAL_TARGETS[cal.joint][cal.i];
+  const n = CAL_TARGETS[cal.joint].length;
+  const what = cal.joint === 0 ? 'the upper arm with the red line' : 'the forearm with the blue line';
+  document.getElementById('calTarget').innerText = `${CAL_NAMES[cal.joint]} ${cal.i + 1}/${n}: align ${what} ${angle}\u00b0`;
+  document.getElementById('calHint').innerText = !cal.both ? 'Use the fine buttons, look straight down onto the pivot holes.'
+    : cal.side === 0 ? 'Side 1 of 2: approach the line using only the + buttons.'
+    : 'Side 2 of 2: now approach it from the other side, using only the - buttons.';
+}
+
+// Starts a target: the pulse the current calibration expects there, from below when both sides
+async function calTarget() {
+  const guess = calPulse(cal.joint, CAL_TARGETS[cal.joint][cal.i], boardCfg);
+  const start = cal.both ? guess - 40 : guess;
+  if (cal.joint === 0) cal.s = start; else cal.e = start;
+  calShow();
+  await calMove();
+}
+
+async function calStart(joint) {
+  if (jobActive) { status.innerText = "Not during a plot"; return; }
+  if (calBusy) { status.innerText = "A calibration is still running"; return; }
+  calBusy = true;
+  const c = boardCfg;
+  if (joint === 1 && (c.s1_table || []).length < 2 &&
+      !confirm("The shoulder isn't calibrated yet, so 0\u00b0 for it is only approximate. Calibrate the elbow anyway?")) return;
+  cal = { joint, i: 0, both: document.getElementById('calBoth').checked, side: 0, points: [], backlash: [], first: 0,
+          s: calPulse(0, joint === 0 ? -90 : 0, c), e: calPulse(1, 90, c) };
+  document.getElementById('calPanel').style.display = 'block';
+  await sendCmd('ANG P=0');  // pen up
+  await calTarget();
+}
+
+async function calNudge(us) {
+  if (!cal) return;
+  if (cal.joint === 0) cal.s += us; else cal.e += us;
+  await calMove();
+}
+
+async function calHere() {
+  if (!cal) return;
+  const pw = cal.joint === 0 ? cal.s : cal.e;
+  if (pw <= PW_MIN || pw >= PW_MAX) {
+    // At the limit the servo may not really be on the line, and the point would be useless
+    status.innerText = "That's the servo's limit: this line can't be measured, press Skip This Line";
+    return;
+  }
+  if (cal.both && cal.side === 0) {
+    // Side 1 done: start side 2 a bit beyond the line, to be approached with the - buttons
+    cal.first = pw; cal.side = 1;
+    if (cal.joint === 0) cal.s = pw + 40; else cal.e = pw + 40;
+    calShow(); await calMove();
+    return;
+  }
+  const angle = CAL_TARGETS[cal.joint][cal.i];
+  const value = cal.both ? (cal.first + pw) / 2 : pw;
+  // Each line's pulse must continue the trend of the previous ones (the board rejects
+  // anything else, and the whole run would be lost)
+  const pts = cal.points;
+  const last = pts.length ? pts[pts.length - 1][1] : null;
+  const trend = pts.length >= 2 ? Math.sign(pts[pts.length - 1][1] - pts[pts.length - 2][1]) : 0;
+  if (last !== null && (Math.round(value) === last || (trend && Math.sign(value - last) !== trend))) {
+    if (cal.both) { cal.side = 0; calShow(); }  // measure this line again from side 1
+    status.innerText = `That doesn't fit the previous lines (the pulse should keep ${trend > 0 ? 'rising' : trend < 0 ? 'falling' : 'changing'}): check the alignment, or press Skip This Line`;
+    return;
+  }
+  if (cal.both) {
+    // Rising and falling stop on either side of the line: the middle is the point, the gap the backlash
+    cal.points.push([angle, Math.round((cal.first + pw) / 2)]);
+    cal.backlash.push(cal.first - pw);
+  } else {
+    cal.points.push([angle, Math.round(pw)]);
+  }
+  await calNext();
+}
+
+async function calSkip() { if (cal) await calNext(); }
+
+async function calNext() {
+  cal.i++; cal.side = 0;
+  if (cal.i < CAL_TARGETS[cal.joint].length) { await calTarget(); return; }
+  // All lines done: save (after the last move, or the board would refuse it as busy)
+  await calIdle();
+  const joint = cal.joint, key = 's' + (joint + 1);
+  if (cal.points.length < 2) { status.innerText = "Fewer than two points measured: nothing saved"; return calEnd(); }
+  const res = await sendCmd(`CAL ${key} ` + cal.points.map(p => `${p[0]}:${p[1]}`).join(','));
+  let msg = res === undefined ? status.innerText + " (nothing saved)" : `${CAL_NAMES[joint]}: ${cal.points.length} points saved`;
+  if (res !== undefined && cal.backlash.length) {
+    const b = Math.max(0, cal.backlash.reduce((x, y) => x + y, 0) / cal.backlash.length);
+    await sendCmd(`CFG ${key}_hyst=${b.toFixed(1)}`);
+    msg += `, backlash ${b.toFixed(1)} \u00b5s set as hysteresis correction`;
+  }
+  await calEnd();
+  status.innerText = msg;
+}
+
+async function calCancel() { await calEnd(); status.innerText = "Calibration cancelled, nothing saved"; }
+
+async function calEnd() {
+  await calIdle();
+  cal = null;
+  document.getElementById('calPanel').style.display = 'none';
+  await sendCmd('PARK');
+  await loadConfig();
+  calBusy = false;
+}
+
+async function calClear() {
+  if (!confirm("Delete the measured points of both joints and go back to Park/Slope?")) return;
+  await sendCmd('CAL s1'); await sendCmd('CAL s2');
+  await loadConfig();
+  status.innerText = "Measured points deleted: Park/Slope again";
+}
+
+// 1 cm grid in the robot's own coordinates (as on the template), clipped to the drawing area
+function drawGrid() {
+  const q = [], lines = [];
+  for (let x = Math.ceil(BED.minX / 10) * 10; x <= BED.maxX; x += 10) lines.push([[x, BED.minY], [x, BED.maxY]]);
+  for (let y = Math.ceil(BED.minY / 10) * 10; y <= BED.maxY; y += 10) lines.push([[BED.minX, y], [BED.maxX, y]]);
+  resetCanvas();
+  ctx.beginPath(); ctx.strokeStyle = '#059669';
+  lines.forEach(([a, b], k) => {
+    if (k % 2) [a, b] = [b, a];  // every other line backwards: less travel
+    q.push(`G0 X${a[0]} Y${a[1]}`, `G1 X${b[0]} Y${b[1]}`);
+    ctx.moveTo(toCanvasX(a[0]), toCanvasY(a[1])); ctx.lineTo(toCanvasX(b[0]), toCanvasY(b[1]));
+  });
+  ctx.stroke();
+  runJob(q);
 }
 
 function drawTestSquare() {
@@ -469,15 +723,23 @@ document.getElementById('fileInput').addEventListener('change', async (e) => {
     if (!len) return;
     const m = el.getCTM();  // includes transform/scale/rotate of the element and its groups
     const n = Math.ceil(len / step);
-    const pts = [];
+    const spacing = len / n;
+    let pts = [], prev = null;
     for (let i = 0; i <= n; i++) {
-      let pt = el.getPointAtLength(len * i / n);
-      if (m) pt = pt.matrixTransform(m);
+      const raw = el.getPointAtLength(len * i / n);
+      // A path can have several pieces (each "M" starts one, e.g. the letters of a word).
+      // Along a path two samples are never further apart than their spacing, so a bigger
+      // jump is a move to the next piece: start a new line there (pen up), don't draw it.
+      if (prev && Math.hypot(raw.x - prev.x, raw.y - prev.y) > spacing * 1.5 && pts.length) {
+        sampled.push(pts); pts = [];
+      }
+      prev = { x: raw.x, y: raw.y };
+      const pt = m ? raw.matrixTransform(m) : raw;
       pts.push({ x: pt.x, y: pt.y });
       if (pt.x < minX) minX = pt.x; if (pt.x > maxX) maxX = pt.x;
       if (pt.y < minY) minY = pt.y; if (pt.y > maxY) maxY = pt.y;
     }
-    sampled.push(pts);
+    if (pts.length) sampled.push(pts);
   });
   holder.innerHTML = '';
 

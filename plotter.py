@@ -8,7 +8,7 @@ import os
 from machine import Pin, PWM, I2C, SoftI2C
 from rescue import custom, event, connect, wifi_watch, wifi_state, recv, read_request, handle_update, servo_pins, Led, chip, NAME
 
-REVISION = "REV 16.0"
+REVISION = "REV 17.0"
 
 # --- 1. Self-healing OLED Driver (72x40) ---
 # The built-in framebuf font is fixed at 8x8 px, so 72x40 fits 9 chars x 5 rows.
@@ -148,8 +148,24 @@ config = {
     "bed_maxx": 50.0,
     "bed_miny": 80.0,
     "bed_maxy": 150.0,
-    "flip": 0.0          # 1: drawings turned 180 deg for someone facing the robot from the paper side
+    "flip": 0.0,         # 1: drawings turned 180 deg for someone facing the robot from the paper side
+    # Precise calibration (optional, measured on the BrachioGraph template): [angle, pulse us]
+    # pairs, sorted by angle. With two or more, they replace Park + Slope for that joint.
+    "s1_table": [],
+    "s2_table": []
 }
+
+def check_table(table):
+    # [[angle, pulse], ...] -> sorted list of float pairs, or ValueError
+    t = sorted([float(a), float(p)] for a, p in table)
+    if any(not 500 <= p <= 2500 for a, p in t):
+        raise ValueError("pulse outside 500-2500 us")
+    if any(t[i][0] == t[i + 1][0] for i in range(len(t) - 1)):
+        raise ValueError("the same angle twice")
+    steps = [t[i + 1][1] - t[i][1] for i in range(len(t) - 1)]
+    if not (all(d > 0 for d in steps) or all(d < 0 for d in steps)):
+        raise ValueError("pulses must keep rising (or keep falling) with the angle")
+    return t
 
 # Calibration survives reboots in config.json on the board's flash
 CONFIG_FILE = "config.json"
@@ -160,7 +176,13 @@ def load_config():
             saved = json.load(f)
         for k in config:
             if k in saved:
-                config[k] = float(saved[k])
+                if isinstance(config[k], list):
+                    try:
+                        config[k] = check_table(saved[k])
+                    except (ValueError, TypeError) as e:
+                        print(CONFIG_FILE, k, "ignored:", repr(e))
+                else:
+                    config[k] = float(saved[k])
         print("Config loaded from", CONFIG_FILE, config)
     except OSError:
         print("No", CONFIG_FILE, "yet - using defaults")
@@ -226,10 +248,41 @@ def hysteresis(joint, pw, correction):
     h[0] = pw
     return pw + h[1] * correction / 2
 
+def pulse(joint, deg):
+    # Joint angle -> pulse (us): through the measured points of the precise calibration if
+    # there are two or more (straight between neighbours, the end segments continued beyond
+    # them), else the straight line given by Park and Slope
+    table = config["s1_table" if joint == 0 else "s2_table"]
+    if len(table) >= 2:
+        i = 1
+        while i < len(table) - 1 and deg > table[i][0]:
+            i += 1
+        (a0, p0), (a1, p1) = table[i - 1], table[i]
+        return p0 + (deg - a0) * (p1 - p0) / (a1 - a0)
+    if joint == 0:
+        return config["s1_pw"] + (deg - config["s1_ang"]) * config["s1_slope"]
+    return config["s2_pw"] + (deg - config["s2_ang"]) * config["s2_slope"]
+
+def angle_of(joint, pw):
+    # Pulse -> joint angle, the inverse of pulse() (bisection; pulse() is monotonic)
+    lo, hi = -270.0, 270.0
+    rising = pulse(joint, hi) > pulse(joint, lo)
+    for _ in range(40):
+        mid = (lo + hi) / 2
+        if (pulse(joint, mid) < pw) == rising:
+            lo = mid
+        else:
+            hi = mid
+    return (lo + hi) / 2
+
+# Raw pulses for the precise calibration (PW command); None when the servos follow angles
+raw = {"s": None, "e": None}
+
 def set_hardware(sh_deg, el_deg, pen_down):
     state["s"], state["e"], state["pen"] = sh_deg, el_deg, pen_down
-    pw_1 = config["s1_pw"] + (sh_deg - config["s1_ang"]) * config["s1_slope"]
-    pw_2 = config["s2_pw"] + (el_deg - config["s2_ang"]) * config["s2_slope"]
+    raw["s"] = raw["e"] = None
+    pw_1 = pulse(0, sh_deg)
+    pw_2 = pulse(1, el_deg)
     pw_3 = config["pen_down"] if pen_down else config["pen_up"]
     set_raw_us(hysteresis(0, pw_1, config["s1_hyst"]),
                hysteresis(1, pw_2, config["s2_hyst"]), pw_3)
@@ -399,6 +452,13 @@ async def run_job():
     update_oled(REVISION, job["state"].upper(), "%d/%d" % (job["line"], job["total"]))
 
 # --- 4. Wi-Fi: rescue.py ---
+# ESP32-C3 boards with the OLED (the 0.42" OLED board) transmit fine at full power; rescue.py's
+# 13 dBm default is meant for C3 boards without a display (the "SuperMini" kind), whose access
+# point was invisible at 20 dBm. "txpower" in customization.json overrides both.
+import rescue
+if "txpower" not in custom and C3 and oled_seen:
+    rescue.TXPOWER = None
+
 IP = connect(lambda *lines: update_oled(*lines))
 
 def ready_screen():
@@ -429,7 +489,7 @@ WEB_FILE = "index.html"
 web_buf = bytearray(1024)  # reused for every page request
 
 # --- 6. Async Server Loop ---
-MOTION_CMDS = ("G0", "G1", "ANG", "PARK", "CFG", "TEST_SHOULDER", "TEST_ELBOW", "TEST_PEN", "DONE")
+MOTION_CMDS = ("G0", "G1", "ANG", "PARK", "CFG", "PW", "CAL", "TEST_SHOULDER", "TEST_ELBOW", "TEST_PEN", "DONE")
 MAX_CHUNK = 8192
 
 moving = {"cmd": None}  # a single command still moving the arm: a second one would fight it
@@ -528,7 +588,7 @@ async def run_cmd(cmd_text, progress):
         new = {}
         for p in cmd_text.split()[1:]:
             k, v = p.split('=')
-            if k not in config:
+            if k not in config or isinstance(config[k], list):
                 raise ValueError("unknown setting " + k)
             if v:
                 new[k] = float(v)
@@ -538,6 +598,48 @@ async def run_cmd(cmd_text, progress):
         save_config()
         restore_hardware()  # apply new calibration to the current position
         update_oled("CONFIG", "SAVED")
+
+    elif cmd_text.startswith("PW"):
+        # PW S=<us> E=<us>: precise calibration, both arm servos to exact pulses (either may
+        # be left out). Glides at most 20 us per servo frame, no hysteresis correction.
+        # 500-2500 us here, wider than the 750-2250 us while drawing: on the template the
+        # shoulder must reach 0 deg for the elbow step (about 600 us with the standard mounting),
+        # and someone is watching the arm.
+        if raw["s"] is None:
+            raw["s"], raw["e"] = pulse(0, state["s"]), pulse(1, state["e"])
+        s_pw, e_pw = raw["s"], raw["e"]
+        for p in cmd_text.split()[1:]:
+            k, v = p.split('=')
+            if k == 'S': s_pw = max(500.0, min(2500.0, float(v)))
+            elif k == 'E': e_pw = max(500.0, min(2500.0, float(v)))
+        steps = max(1, math.ceil(max(abs(s_pw - raw["s"]), abs(e_pw - raw["e"])) / 20))
+        s0, e0 = raw["s"], raw["e"]
+        pen = config["pen_down"] if state["pen"] else config["pen_up"]
+        for i in range(1, steps + 1):
+            servo_shoulder.duty_ns(int((s0 + (s_pw - s0) * i / steps) * 1000))
+            servo_elbow.duty_ns(int((e0 + (e_pw - e0) * i / steps) * 1000))
+            servo_pen.duty_ns(int(pen * 1000))
+            await next_frame()
+        raw["s"], raw["e"] = s_pw, e_pw
+        # Keep the angles in step, so the next normal move starts from here
+        state["s"], state["e"] = angle_of(0, s_pw), angle_of(1, e_pw)
+        pos["x"] = pos["y"] = None
+        update_oled("CALIBRATE", "S %d us" % s_pw, "E %d us" % e_pw)
+
+    elif cmd_text.startswith("CAL"):
+        # CAL s1|s2 angle:pulse,angle:pulse,... saves measured points; CAL s1|s2 alone deletes them
+        parts = cmd_text.split()
+        if len(parts) < 2 or parts[1] not in ("s1", "s2"):
+            raise ValueError("CAL s1|s2 [angle:pulse,...]")
+        points = [p.split(":") for p in parts[2].split(",")] if len(parts) > 2 else []
+        table = check_table(points)
+        if len(table) == 1:
+            raise ValueError("needs at least two points")
+        config[parts[1] + "_table"] = table
+        save_config()
+        if raw["s"] is not None:  # the servos stay put; their angles follow the new calibration
+            state["s"], state["e"] = angle_of(0, raw["s"]), angle_of(1, raw["e"])
+        update_oled("CALIBRATE", parts[1].upper(), "%d points" % len(table))
 
     elif cmd_text == "PARK":
         await go_park()

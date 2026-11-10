@@ -160,9 +160,18 @@ On the robot's page:
 2. Under *Live Calibration*, set *Pen Up* so the pen clears the paper and
    *Pen Down* so it rests lightly on it; try them with *Toggle Pen*.
 3. Press *Apply Config*, then *Draw Test Square*: its sides should be straight.
+4. If a warning appears under the drawing area, press *Auto-fit Area to Arms*
+   and *Apply Config* again.
+
+Want even more precise drawings? At the bottom of the page, *Precise
+Calibration* measures the arms on the printed BrachioGraph template
+([images/template-grid.pdf](images/template-grid.pdf)),
+line by line, and *Draw 1 cm Grid* shows how exact the robot is. This is
+optional; [EXPERT.md](EXPERT.md#precise-calibration-optional) explains it.
 
 ## 11. Draw
 
 Pick a picture (SVG), a photo or a text, check the preview and press
-*Plot Drawing*. The robot keeps drawing on its own, even if you close the
+*Plot Drawing*. To start with, try the SVGs in [images/](images/): a hat, a
+logo and a map of Switzerland. The robot keeps drawing on its own, even if you close the
 browser.

@@ -8,7 +8,7 @@ simple `G0`/`G1` commands and the board plots it on its own, so the phone can sl
 disconnect meanwhile. It also runs on a classic ESP32 DevKit and the other ESP32 chips with
 Wi-Fi (S2, S3, C2, C5, C6; no OLED there), and can join an existing Wi-Fi instead of opening its own.
 
-Current version: **`plotter.py`** (REV 16.0) with its web page **`index.html`**, started by
+Current version: **`plotter.py`** (REV 17.0) with its web page **`index.html`**, started by
 **`main.py`**. The short build guide for beginners is [README.md](README.md).
 
 ---
@@ -54,7 +54,7 @@ I2C pins alone.
 | `"oled"` | `true` on C3, else `false` | Use the 72x40 display on GPIO 5/6 |
 | `"hostname"` | `"plotter"` | The board's name on the network, `http://<hostname>-<xx>.local` (see `"mac_suffix"`) |
 | `"mac_suffix"` | `true` | Adds `-` and the last byte of the board's MAC address (`-60` for `…:65:60`, as `esptool` prints it) to the hostname and to the name of its own access point, so several boards sharing one `customization.json` stay apart. The OLED and `/status` show the full name. |
-| `"txpower"` | C3: `13`, others: full power | Wi-Fi transmit power in dBm (2–20). Some ESP32-C3 boards (the small "SuperMini" kind, LED on GPIO 8) can't transmit cleanly at the full 20 dBm: on one, its access point was invisible at 20 dBm and appeared at 17 and below, at 80–87 % signal right next to it, and joining a network failed now and then. If the access point still doesn't show up, try `8.5`; on a good board `20` gives the most range. |
+| `"txpower"` | C3 without display: `13`; C3 with the OLED and other chips: full power; rescue mode: `13` on any C3 | Wi-Fi transmit power in dBm (2–20). Some ESP32-C3 boards (the small "SuperMini" kind without display, LED on GPIO 8) can't transmit cleanly at the full 20 dBm: on one, its access point was invisible at 20 dBm and appeared at 17 and below, at 80–87 % signal right next to it, and joining a network failed now and then. The C3 boards with the 0.42" OLED transmit fine at full power, so the plotter keeps full power when it finds the display; rescue mode doesn't know about the display and stays at 13. If an access point still doesn't show up, try `8.5`. |
 | `"pins"` | per chip, see the table | Servo pins |
 
 - Arms: inner `L1` = 80 mm, outer `L2` = 80 mm by default; set your lengths in the web page
@@ -124,7 +124,15 @@ By USB:
   version (otherwise `.py`, with a warning), stale counterparts are deleted, `main.py` goes last,
   then the board restarts. Nothing is copied without asking (`--yes` skips the questions);
   answering "no" restarts the board unchanged.
-- `customization.json` is optional (without it the board opens its own access point); if present
+- **Permissions:** serial ports belong to the group `dialout`. Without access `flash.sh` says
+  what to do (`sudo usermod -aG dialout $USER`, then log out and in) instead of failing; don't run
+  it with `sudo`.
+- **Classic ESP32 boards** (e.g. an ESP32-D0WD-V3 DevKit with a CP210x or CH340 USB chip, usually
+  `/dev/ttyUSB0`) work the same way: `esptool` reports them by package name, `flash.sh` installs
+  `ESP32_GENERIC` at offset `0x1000`, and the plotter uses GPIO 25/26/27 for the servos and the
+  LED on GPIO 2 (no OLED).
+- `customization.json` is optional (without it the board keeps the one it has, or opens its own
+  access point); when it's missing, `flash.sh` says so and asks whether to go on; if present
   it's checked first: valid JSON, networks with `ssid` and `password`, an `ap` password of 8–63
   characters, `"arms"` `"wooden"` or `"3d-printed"`, `"oled"` true/false, `"led"` and `"pins"`
   well-formed.
@@ -171,8 +179,10 @@ precompiling below. By hand, these files go on the board:
 file on the board before running it, which needs far more memory than running it. Measured with
 MicroPython 1.29 (the Linux build with a limited heap, so relative numbers): REV 10 and REV 15,
 which run on the board, needed about 106 and 88 KB; REV 11, which didn't start at all (not even
-the Wi-Fi), about 148 KB. REV 16 as `.py` sources needs about 133 KB, too close to failing; as
-`.mpy` files about 65 KB. `mpy-cross` (installed by `requirements.txt`) compiles on the computer;
+the Wi-Fi), about 148 KB. REV 16 as `.py` sources needs about 133 KB (it still started on an
+ESP32-C3 OLED board, so the real limit is somewhat higher), as `.mpy` files about 65 KB. REV 17
+(with the precise calibration) needs about 71 KB as `.mpy` and about 154 KB as `.py`: install
+it with `flash.sh`, which uploads `.mpy` files. `mpy-cross` (installed by `requirements.txt`) compiles on the computer;
 its version must match the board's MicroPython (1.29 here):
 
 ```sh
@@ -345,6 +355,10 @@ the motion), and only the progress is updated every 5 s.
    - Not supported: text (convert to paths first, e.g. Inkscape *Path → Object to Path*),
      embedded images, fills (only outlines are drawn).
    - The drawing is scaled to fill 90 % of the drawing area, keeping its proportions.
+   - A path made of several pieces (each "M" in the path data starts one, e.g. the letters of
+     a word) is drawn piece by piece with the pen lifted in between.
+   - Example drawings to try: `images/redhat.svg`, `images/redhat-logo.svg`,
+     `images/switzerland-map-country.svg` (from [SVG Repo](https://www.svgrepo.com)).
    - **Rotate 90° when that makes the drawing bigger** (on by default): a drawing whose shape
      suits the area better when turned, typically a portrait image on the landscape drawing
      area, is rotated 90° clockwise (its top ends up on the right). The status line then says
@@ -414,6 +428,7 @@ pulse_us = park_pw + (angle_deg − park_angle) × slope
 | S1 / S2 Hysteresis | `s1_hyst`, `s2_hyst` | 0 | Backlash correction in µs (see below) |
 | Inner / Outer arm | `L1`, `L2` | 80 / 80 | Arm lengths in mm, pivot to pivot (outer: elbow to pen tip) |
 | Area X/Y min/max | `bed_minx` … `bed_maxy` | −50, 50, 80, 150 | Drawing area in mm |
+| (section 8) | `s1_table`, `s2_table` | empty | Measured [angle, pulse] points of the [precise calibration](#precise-calibration-optional); with two or more they replace Park and Slope for that joint |
 | View | `flip` | 0 | 1 turns every drawing 180° for someone facing the robot from the paper side (the preview turns with it) |
 
 Angles: shoulder 0° = arm pointing straight ahead (+Y), negative = to the left. The elbow angle
@@ -482,6 +497,76 @@ Approximate largest area by arm length (both arms equal):
 Longer arms come at a price: the same angular slop of the servos gives a proportionally larger
 error at the pen (1.5× with 120 mm arms), and longer arms are heavier and flex more. With
 arms over 100 mm, metal-gear servos (e.g. MG90S) are strongly recommended.
+
+**The area warning:** under the area fields the page warns when part of the saved drawing area
+is out of reach, needs a pulse beyond the drawing limits of 750–2250 µs (the board clips it, so
+drawings come out squashed there), or needs the elbow almost straight or folded. With the default
+calibration and the standard mounting this is the case for the default area X −50…50, Y 80…150:
+its far right corner would need about 504 µs from the shoulder. *Auto-fit Area to Arms* finds an
+area that fits.
+
+**Why the middle of the servo's travel matters:** the shoulder's park pulse (1500 µs, the servo's
+middle) points at −90°, while the drawing needs roughly −120° to 0°. The shoulder therefore works
+mostly on one side of its middle, where cheap servos are least linear, and runs out of travel on
+the right. Mounting the upper arm so that 1500 µs points at about −60° instead (S1 Park −60, arm
+remounted after *Park*) puts the drawing in the middle of the shoulder's travel; auto-fit then
+finds about 136 × 96 mm instead of 121 × 85 mm with 80 mm arms. This is optional: the standard
+park pose stays the default, and the precise calibration below corrects either mounting.
+
+### Precise calibration (optional)
+
+Park and Slope describe each servo as a straight line through one point. Real servos, cheap ones
+especially, deviate from that line, more the further they turn from the middle: drawings then come
+out slightly distorted towards the edges. Section 8 of the page measures where each servo really
+is, on the BrachioGraph template ([images/template-grid.pdf](images/template-grid.pdf), the same
+file as [on brachiograph.art](https://www.brachiograph.art/_downloads/94e7b4ab642ebc644e516e616c26aaa3/template-grid.pdf)),
+and replaces Park and Slope by the measured points. It's an extra step: mount and calibrate as
+usual first.
+
+The template (print it at 100 %, check the 1 cm squares with a ruler) is made for 80 mm arms. Its
+grid is in cm and uses the plotter's own coordinates: the shoulder pivot is at 0,0 (in the
+cut-out for the base), X to the right, Y away from the robot, seen from behind the robot.
+
+- **Red lines** start at the shoulder pivot: shoulder angles from −150° to +30° (0° straight ahead,
+  −90° to the left).
+- **Blue lines** start at 0,8, where the elbow is when the shoulder is at 0° with an 80 mm upper
+  arm: elbow angles relative to the upper arm, from 15° to 165° (0° would continue straight on).
+
+**Steps:**
+
+1. Lay the robot on the template with the shoulder pivot exactly on 0,0. Tape both down.
+2. **Calibrate Shoulder:** the page names a red line (−120° to +15°, every 15°) and moves the
+   shoulder there with the current calibration. Move it onto the line with the fine buttons
+   (±1, ±5, ±20 µs; 1 µs is about 0.1°) until the line from the shoulder pivot through the elbow
+   pivot lies on it, looking straight down onto the pivot holes, then press **Here**. Lines the
+   servo can't reach: **Skip This Line**. After the last line the points are saved and the arm
+   parks.
+3. **Calibrate Elbow:** the page turns the shoulder to 0° (with the points just measured), so the
+   upper arm lies on the red 0° line and the elbow is over 0,8. Then the forearm (elbow pivot to
+   pen tip) goes onto the blue lines (15° to 150°) the same way.
+4. **Check:** *Draw 1 cm Grid* draws the drawing area's 1 cm grid lines in the robot's own
+   coordinates, onto the template: they should land on the printed grid. Where they don't, you see
+   how far off the robot is and where.
+
+**Approach each line from both sides** (optional checkbox): for every line the page first starts a
+little below it (approach with the + buttons only, press Here), then a little above it (approach
+with the − buttons only, press Here). The servo stops slightly short in either direction because
+of the play in its gears; the middle of the two pulses is saved as the point, and their average
+difference over all lines is set as that joint's [hysteresis correction](#hysteresis-correction),
+measured instead of guessed. Twice the work.
+
+**Limits and checks:**
+
+- During the calibration the servos may go from 500 to 2500 µs (the drawing limit is 750–2250):
+  with the standard mounting the shoulder needs about 600 µs for 0°, which the elbow step needs.
+  Near the ends the page warns; if the servo buzzes against its stop, go back and skip the line.
+- Pressing Here at the 500/2500 µs limit is refused (the servo may not really be on the line).
+- Each line's pulse must continue the trend of the previous ones (keep rising or keep falling):
+  otherwise the page asks to check the alignment or skip, and the board refuses the table too.
+- Between measured points the board interpolates in a straight line; beyond the first and last
+  point it continues the end segments. Auto-fit and the area warning use the measured points.
+- *Delete Measured Points* goes back to Park and Slope for both joints. Changing Park or Slope has
+  no effect on a joint with measured points.
 
 To return to the defaults, delete `config.json` from the board (Thonny's file view) and reset.
 
@@ -640,6 +725,8 @@ Commands for `POST /cmd`:
 | `G1 X<mm> Y<mm>` | Draw a straight line with pen down |
 | `ANG S=<deg> E=<deg> P=<0/1>` | Move joints directly to these angles |
 | `CFG <key>=<value> ...` | Set any settings by their config key (e.g. `CFG speed=20 s1_hyst=8`) and save to `config.json` |
+| `PW S=<us> E=<us>` | Precise calibration: move the shoulder (S) and/or elbow (E) servo to exact pulses (500–2500 µs), gliding, without hysteresis correction |
+| `CAL s1\|s2 <angle>:<us>,...` | Save the measured points of a joint (at least two; pulses must keep rising or falling with the angle); `CAL s1` alone deletes them |
 | `JOB_BEGIN <lines> <bytes>` | Start a new upload (checks free flash) |
 | `JOB_START` | Start plotting the uploaded job |
 | `JOB_PAUSE`, `JOB_RESUME`, `JOB_STOP` | Control the running plot |
@@ -647,8 +734,9 @@ Commands for `POST /cmd`:
 | `TEST_OLED` | Re-initialise the display |
 | `DONE` | Lift the pen and show DONE |
 
-While a job runs or a single command is still moving the arm, `G0`, `G1`, `ANG`, `PARK`, `CFG`, the
-tests, `DONE`, `JOB_BEGIN` and `JOB_START` are refused. A `G0`/`G1` target farther than `L1 + L2`
+While a job runs or a single command is still moving the arm, `G0`, `G1`, `ANG`, `PARK`, `CFG`,
+`PW`, `CAL`, the tests, `DONE`, `JOB_BEGIN` and `JOB_START` are refused (the page sends the precise
+calibration's nudges one after another, so none get lost). A `G0`/`G1` target farther than `L1 + L2`
 from the shoulder is refused with `out of reach`; in a job it ends the plot with `error`.
 Single `G0`/`G1` commands still work without a job (optionally followed by `|text` to show on the
 OLED, e.g. `G1 X10 Y100|5/200`).
@@ -715,7 +803,10 @@ The drawing area is no longer a constant in the page: it comes from the board's 
 | Board resets or OLED glitches when servos move | Brownout: check the capacitor (polarity, firmly in the breadboard), use a stronger USB power supply, or power the servos separately. |
 | Board opens `ESP32-Plotter` instead of joining your Wi-Fi, `/log` says `customization.json invalid` | A typo in `customization.json` (it was uploaded without `flash.sh`, which checks it): fix it and flash by USB. |
 | Servo buzzes at rest | It's pushing against something or the pulse is at its limit; check calibration and mechanical range. |
-| Lines are curved instead of straight | Calibration slopes or park angles are off; recalibrate with the test square. |
+| Lines are curved instead of straight | Calibration slopes or park angles are off; recalibrate with the test square, or do the [precise calibration](#precise-calibration-optional). |
+| ⚠ warning under the drawing area fields | Part of the area is beyond the servos' limits or reach (see [Arms and drawing area](#arms-and-drawing-area)): *Auto-fit Area to Arms*, then *Apply Config*. |
+| Precise calibration: "That doesn't fit the previous lines" | The arm isn't on the named line, or the servo is at its end: check the alignment, or *Skip This Line*. |
+| `flash.sh`: "no access to /dev/ttyUSB0" | Serial ports belong to the group `dialout`: `sudo usermod -aG dialout $USER`, then log out and in. Already in the group: log out and in (or reboot). Don't run `sudo ./flash.sh`. |
 | Lines are shaky or wobbly | Lower the speed; check the capacitor across the servo supply; check the arms and pen holder for play; metal-gear servos help a lot. |
 | Small steps where lines reverse, back-and-forth lines don't overlap | Servo backlash: set the hysteresis correction. |
 | Pen drags between shapes | Increase `PEN_SETTLE_MS` or lower `pen_up` (more lift). |
@@ -739,7 +830,7 @@ The drawing area is no longer a constant in the page: it comes from the board's 
 | `flash.sh` | Installs and updates the board by USB or Wi-Fi, see [flash.sh](#flashsh) |
 | `requirements.txt` | The computer-side tools: esptool, mpremote, mpy-cross |
 | `README.md`, `PARTS.md` | Build guide and parts list |
-| `images/`, `3d-prints/` | Pictures for the README (drawn by `images/draw.py`) and the printed parts |
+| `images/`, `3d-prints/` | Pictures for the README (drawn by `images/draw.py`), the BrachioGraph template `template-grid.pdf` for the precise calibration, example SVGs, and the printed parts |
 
 Revisions (up to 15 each in its own file in the original working folder; from 16 on in git):
 
@@ -760,3 +851,4 @@ Revisions (up to 15 each in its own file in the original working folder; from 16
 | 14 | Option to rotate drawings 90° when that makes them bigger (portrait images on the landscape area); status line shows the final size in mm |
 | 15 | Text section: up to 3 lines in Script, Block or Block bold Hershey single-stroke fonts, word wrap, largest-that-fits or fixed letter height, German umlauts; plot button renamed *Plot Drawing* |
 | 16 | Split into `main.py`, `plotter.py`, `rescue.py` (colleague's branch: joining a Wi-Fi via `customization.json`, updates over Wi-Fi with a rescue server, event log, classic ESP32 and other chips, park pose, view from the paper side, ramped glide, servos started one after another); installed as precompiled `.mpy` files (half the RAM); new `flash.sh`: finds the ESP32 by USB ID with a menu, keeps MicroPython and the calibration unless asked, any ESP32 with Wi-Fi, esptool 4 and 5, Wi-Fi updates only after checking it's the plotter and the password is right; `"arms"` setting for the elbow default; Wi-Fi errors shown on the OLED in words (wrong password, not found ...), alternating idle screen, connection-lost notice; the board's LED blinks as a heartbeat (fast while plotting, triple flash in rescue mode); "parking" state after a plot; display not retried when there is none; updates and restarts refused during a plot; board names with the MAC's last byte (`plotter-60`) for the hostname and the own access point; Wi-Fi transmit power setting (13 dBm default on C3: fixes boards whose access point was invisible); up to 3 Wi-Fi scans and no giving up on a momentary "wrong password"; `flash.sh` asks MicroPython before using esptool, frees boards left stuck by esptool's reset, never erases on `--yes` alone and saves the board's settings before erasing, remembers installed boards |
+| 17 | Optional precise calibration on the BrachioGraph template (section 8): measured points per joint replace Park/Slope, guided line by line with fine pulse buttons, optional approach from both sides that also measures the backlash for the hysteresis correction; *Draw 1 cm Grid* to check on the template; warning when the drawing area is beyond the servos' limits or reach; full Wi-Fi power on C3 boards with the OLED (13 dBm only without display); `flash.sh` asks before going on without `customization.json` (and no longer stops at the end without it), explains missing serial port permissions; SVG paths made of several pieces no longer get stray connecting lines; BrachioGraph template and example SVGs in `images/`; includes PR #3 (out-of-reach targets refused, one moving command at a time, classic ESP32 pins 25/26/27, new STLs) |

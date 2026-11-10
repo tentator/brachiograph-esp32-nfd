@@ -91,8 +91,10 @@ SUFFIX = "-%02x" % machine.unique_id()[-1] if custom.get("mac_suffix", True) els
 NAME = custom.get("hostname", "plotter") + SUFFIX  # also http://<NAME>.local where mDNS works
 
 # Transmit power in dBm, "txpower" in customization.json. ESP32-C3 boards default to 13: on
-# some (the C3 "SuperMini" kind) the access point was invisible at the full 20 dBm and appeared
-# at 17 and below, and joining a network failed now and then.
+# some (the C3 "SuperMini" kind, no display) the access point was invisible at the full 20 dBm
+# and appeared at 17 and below, and joining a network failed now and then. The plotter lifts
+# this to full power on C3 boards where it found the OLED (they transmit fine); rescue mode
+# keeps 13, as it doesn't know about the display.
 TXPOWER = custom.get("txpower", 13 if chip() == "ESP32C3" else None)
 
 def set_txpower(wlan):
