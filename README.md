@@ -23,20 +23,23 @@ pip install --user -r requirements.txt
 
 The last line installs the tools that talk to the ESP32 (esptool, mpremote, mpy-cross).
 
-## 2. Enter your Wi-Fi
+## 2. Enter your Wi-Fi (optional)
+
+The robot works without this step: it then opens its own Wi-Fi (see step 9).
+To have it join your Wi-Fi and to update it later without the USB cable:
 
 ```sh
-cp customization.example.json customization.json
+cp customization.defaults.json customization.json
 ```
 
-Open `customization.json` and fill in:
+Open `customization.json` and change two lines:
 
-- `hostname`: your robot's name (the robot adds a dash and two characters of its own,
-  e.g. `node11-60`, so two robots never get the same name)
-- `networks`: the Wi-Fi networks it should join, the most important first
-- `ota_password`: a password of your choice for updates over Wi-Fi
-- `arms`: leave it at `"3d-printed"` for the printed arms from [PARTS.md](PARTS.md)
-  (`"wooden"` if the elbow servo sits on the lower arm instead)
+- `"networks": [],` becomes your Wi-Fi's name and password:
+  `"networks": [{"ssid": "my-wifi", "password": "my-password"}],`
+- `"ota_password": "",` gets a password of your choice for updates over Wi-Fi:
+  `"ota_password": "my-update-password",`
+
+Leave the rest as it is.
 
 `customization.json` holds passwords and stays on your computer: Git never uploads it.
 
@@ -55,10 +58,13 @@ cable into the ESP32 and into the computer.
 
 It finds the ESP32 among the USB ports by itself (if several could be one, it
 asks which), puts MicroPython on it the first time, then copies the drawing
-program, the web page and your `customization.json`. It asks before changing
-anything; answer `y`. Later, without the USB cable, the same command updates
-the robot over Wi-Fi: it first checks that it really found your robot and that
-the password is right. `./flash.sh --help` shows the other options.
+program, the web page and your `customization.json`. It asks once before changing
+anything; answer `y`. If the ESP32 already has settings of its own, it asks
+before replacing them with your `customization.json`. If it says it has no access
+to the USB port, run `./deploy_udev.sh` once (it asks for your computer's
+password) and plug the ESP32 in again. Later, without the USB cable, `./flash.sh`
+updates the robot over Wi-Fi: it first checks that it really found your robot and
+that the password is right. `./flash.sh --help` shows the other options.
 
 ## 5. Build the robot
 
@@ -85,22 +91,24 @@ pin; the capacitor absorbs their current spikes.
 
 | Wire colour | From | To |
 |---|---|---|
-| Black | ESP32 `GND` | breadboard column 2, lower half; from there each servo's ground and the capacitor's − (marked side) |
-| Red | ESP32 `5V` | breadboard column 2, upper half; from there each servo's + and the capacitor's + |
+| Black | ESP32 `GND` | breadboard column 1, rows a–e; the capacitor's − (marked side) goes there too |
+| Red | ESP32 `5V` | breadboard column 1, rows f–j; the capacitor's + goes there too |
+| Brown | breadboard column 1, rows a–e | each servo's − |
+| Orange | breadboard column 1, rows f–j | each servo's + |
 | Green | ESP32 `0` | shoulder servo signal |
 | Yellow | ESP32 `1` | elbow servo signal |
 | White | ESP32 `3` | pen servo signal |
 
 Each servo's own cable is brown (−), red (+) and yellow (signal). Plug it into
-the jumper wires halfway: brown to black, red to red, yellow to the servo's
+the jumper wires halfway: brown to brown, red to orange, yellow to the servo's
 signal colour.
 
-Then plug the USB-C power supply into the ESP32.
+![Base, breadboard and both arms, wired](images/6_wired.jpg)
 
 ## 7. Mount the arms
 
-Plug in the USB power supply: both arm servos turn to their middle position
-and the pen servo lifts. This is the park position: the robot goes there when
+Plug the USB-C power supply into the ESP32: both arm servos turn to their
+middle position and the pen servo lifts. This is the park position: the robot goes there when
 it is switched on and after every drawing. Seen from above, with the shoulder at the top and the paper
 below it:
 
@@ -133,20 +141,24 @@ Run the elbow and pen servo cables along the arms and fix them with cable
 ties. Leave enough slack at the shoulder and at the elbow, so the arms can
 turn all the way without pulling on a cable.
 
-TODO: photo of the finished robot, wired and ready for calibration.
+![The finished robot in the park position, wired and ready for calibration](images/8_cables_tidy.jpg)
 
 ## 9. Connect
 
-Put your laptop on the same Wi-Fi as the robot, open a browser and go to
-`http://<name>.local` with the name that `./flash.sh` printed at the end and
-that the display shows, for example `http://node11-60.local`. Type the
-`http://` too. The robot's page opens.
+With your Wi-Fi in `customization.json`: put your laptop on the same Wi-Fi as
+the robot, open a browser and go to `http://<name>.local` with the name that
+`flash.sh` printed at the end and that the display shows, for example
+`http://plotter-60.local`. Type the `http://` too.
 
-The small display on the ESP32 helps: it shows the robot's address when it's
-ready, and says what went wrong if it couldn't join your Wi-Fi (for example
-*wrong password* or *not in range*). Then the robot opens its own Wi-Fi
-instead (named like the robot, e.g. `node11-60`), and the display shows its
-name and address. If you can't see that Wi-Fi at all, add `"txpower": 8.5`
+Without it, or if the robot can't join your Wi-Fi: it opens its own Wi-Fi
+`ESP32-Plotter-<xx>` (password `plotterpassword`). Connect your laptop to it
+and go to `http://192.168.4.1`. If Chrome on an Android phone shows
+`ERR_TOO_MANY_RETRIES`, use another browser, for example Samsung Internet.
+
+The robot's page opens. The small display on the ESP32 helps: it shows the
+robot's address when it's ready, and says what went wrong if it couldn't join
+your Wi-Fi (for example *wrong password* or *not in range*). If you can't see
+the robot's own Wi-Fi at all, add `"txpower": 8.5`
 to `customization.json` and flash again: some boards can't send at full power. The blinking dot in the
 display's corner and the LED on the board blink while the robot program
 runs.
@@ -155,12 +167,10 @@ runs.
 
 On the robot's page:
 
-1. Under *Arms and Drawing Area*, set *View* to *from the paper side*, so
-   drawings come out the right way up for you.
-2. Under *Live Calibration*, set *Pen Up* so the pen clears the paper and
+1. Under *Live Calibration*, set *Pen Up* so the pen clears the paper and
    *Pen Down* so it rests lightly on it; try them with *Toggle Pen*.
-3. Press *Apply Config*, then *Draw Test Square*: its sides should be straight.
-4. If a warning appears under the drawing area, press *Auto-fit Area to Arms*
+2. Press *Apply Config*, then *Draw Test Square*: its sides should be straight.
+3. If a warning appears under the drawing area, press *Auto-fit Area to Arms*
    and *Apply Config* again.
 
 Want even more precise drawings? At the bottom of the page, *Precise

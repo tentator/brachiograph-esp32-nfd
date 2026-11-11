@@ -9,17 +9,19 @@ import os
 import time
 import uasyncio as asyncio
 
-# customization.json (optional, see customization.example.json): this board's name,
-# Wi-Fi, update password and pins. Set on the computer and uploaded by flash.sh;
-# never served over HTTP. The calibration lives in config.json, set on the web page.
+# customization.defaults.json, overridden by the optional customization.json (a copy of it):
+# this board's name, Wi-Fi, update password, pins and default calibration. Set on the computer and uploaded by flash.sh; never served over HTTP. The
+# calibration set on the web page lives in config.json.
 custom_error = None
-try:
-    with open("customization.json") as f:
-        custom = json.load(f)
-except OSError:
-    custom = {}
-except ValueError as e:  # a typo in the file must not stop the boot: defaults, error in /log
-    custom, custom_error = {}, e
+custom = {}
+for name in ("customization.defaults.json", "customization.json"):
+    try:
+        with open(name) as f:
+            custom.update(json.load(f))
+    except OSError:
+        pass
+    except ValueError as e:  # a typo in the file must not stop the boot: defaults, error in /log
+        custom_error = e
 
 def chip():
     # "ESP32C3 module with ESP32-C3" -> "ESP32C3", "Generic ESP32 module with ESP32" -> "ESP32"
@@ -90,11 +92,9 @@ SCANS = 3  # a single scan often misses a network that is there
 SUFFIX = "-%02x" % machine.unique_id()[-1] if custom.get("mac_suffix", True) else ""
 NAME = custom.get("hostname", "plotter") + SUFFIX  # also http://<NAME>.local where mDNS works
 
-# Transmit power in dBm, "txpower" in customization.json. ESP32-C3 boards default to 13: on
-# some (the C3 "SuperMini" kind, no display) the access point was invisible at the full 20 dBm
-# and appeared at 17 and below, and joining a network failed now and then. The plotter lifts
-# this to full power on C3 boards where it found the OLED (they transmit fine); rescue mode
-# keeps 13, as it doesn't know about the display.
+# Transmit power in dBm, "txpower" in customization.json. ESP32-C3 boards default to 13: at the
+# full 20 dBm the access point of a C3 "SuperMini" was invisible, and a C3 OLED board couldn't
+# join a network 1 m from the router or kept dropping it; at 13 both work.
 TXPOWER = custom.get("txpower", 13 if chip() == "ESP32C3" else None)
 
 def set_txpower(wlan):

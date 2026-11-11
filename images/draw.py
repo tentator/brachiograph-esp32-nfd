@@ -2,17 +2,19 @@
 """Draws images/flash.png and images/wiring.png to scale: the ESP32-C3 0.42" OLED board on a
 170-hole mini breadboard (46.2 x 34.4 mm). Needs Pillow: pip install pillow; python3 draw.py
 
-Jumper colours: black GND, red +5 V, green shoulder (GPIO0), yellow elbow (GPIO1), white pen (GPIO3);
-each servo's own cable (brown -, red +, yellow signal) plugs into them halfway.
+Drawn turned by 180 degrees: USB-C on the left, servos on the right, text upright.
+Jumper colours: black GND bus, brown GND to the servos, red +5 V bus, orange +5 V to the servos, green shoulder (GPIO0), yellow elbow (GPIO1),
+white pen (GPIO3); each servo's own cable (brown -, red +, yellow signal) plugs into them halfway.
 """
 import os
 from PIL import Image, ImageDraw, ImageFont
 
+TEXT = 1.2                   # text scale
 MM = 24                      # pixels per mm while drawing; halved at the end for smooth edges
 P = 2.54                     # hole pitch, mm
 BB_W, BB_H = 46.2, 34.4      # breadboard
 BOARD_W, BOARD_H = 24.8, 20.45
-COLOURS = {"gnd": (30, 30, 30), "5v": (211, 47, 47), "shoulder": (46, 158, 68),
+COLOURS = {"gnd": (30, 30, 30), "5v": (211, 47, 47), "servo5v": (240, 110, 20), "servognd": (150, 95, 50), "shoulder": (46, 158, 68),
            "elbow": (242, 194, 0), "pen": (250, 250, 250), "arrow": (220, 30, 30),
            "servo-": (120, 72, 40), "servo+": (211, 47, 47), "servo-signal": (250, 175, 0)}
 SERVO_CABLE = ("servo-", "servo+", "servo-signal")   # every servo: brown -, red +, yellow signal
@@ -24,20 +26,28 @@ ROWS = {r: u for u, r in enumerate("abcde")} | {r: u + 7 for u, r in enumerate("
 def font(size_mm):
     for name in ("DejaVuSans.ttf", "/usr/share/fonts/liberation-sans-fonts/LiberationSans-Regular.ttf"):
         try:
-            return ImageFont.truetype(name, int(size_mm * MM))
+            return ImageFont.truetype(name, int(size_mm * TEXT * MM))
         except OSError:
             pass
-    return ImageFont.load_default(size=int(size_mm * MM))
+    return ImageFont.load_default(size=int(size_mm * TEXT * MM))
 
 
 class Drawing:
     def __init__(self, w_mm, h_mm, bb_x, bb_y):
         self.img = Image.new("RGB", (int(w_mm * MM), int(h_mm * MM)), "white")
         self.d = ImageDraw.Draw(self.img)
+        self.w, self.h = w_mm, h_mm
         self.bx, self.by = bb_x, bb_y
+        self.turned = True
 
     def px(self, x, y):
+        if self.turned:
+            x, y = self.w - x, self.h - y
         return x * MM, y * MM
+
+    def box(self, x0, y0, x1, y1):
+        (ax, ay), (bx, by) = self.px(x0, y0), self.px(x1, y1)
+        return [min(ax, bx), min(ay, by), max(ax, bx), max(ay, by)]
 
     def hole(self, col, row):
         """Centre of a breadboard hole (column 1..17, row a..j) in mm"""
@@ -45,14 +55,16 @@ class Drawing:
                 self.by + (BB_H - 11 * P) / 2 + (11 - ROWS[row]) * P)
 
     def rect(self, x, y, w, h, fill, outline=None, r=0.6, width=0.15):
-        self.d.rounded_rectangle([*self.px(x, y), *self.px(x + w, y + h)], radius=r * MM,
+        self.d.rounded_rectangle(self.box(x, y, x + w, y + h), radius=r * MM,
                                  fill=fill, outline=outline, width=max(1, int(width * MM)))
 
     def circle(self, x, y, r, fill, outline=None, width=0.1):
-        self.d.ellipse([*self.px(x - r, y - r), *self.px(x + r, y + r)], fill=fill,
+        self.d.ellipse(self.box(x - r, y - r, x + r, y + r), fill=fill,
                        outline=outline, width=max(1, int(width * MM)))
 
     def text(self, x, y, s, size=1.6, fill=(20, 20, 20), anchor="mm"):
+        if self.turned:
+            anchor = {"l": "r", "r": "l"}.get(anchor[0], anchor[0]) + anchor[1]
         self.d.text(self.px(x, y), s, font=font(size), fill=fill, anchor=anchor)
 
     def wire(self, points, colour, width=1.0):
@@ -100,7 +112,7 @@ class Drawing:
             for label, row, dy in ((t, "h", 1.9), (b, "c", -1.9)):
                 x, y = self.hole(10 + i, row)
                 self.circle(x, y, 0.8, (212, 175, 55), (150, 120, 30))
-                self.text(x, y + dy, label, 1.05, (235, 235, 235))
+                self.text(x, y + dy, label, 0.9, (235, 235, 235))
         for name, y in (("BOOT", cy - 2.6), ("RST", cy + 2.6)):
             self.rect(cx + 2.9, y - 0.9, 1.8, 1.8, (200, 200, 200), r=0.3)
             self.text(cx + 3.8, y + (-1.7 if name == "BOOT" else 1.7), name, 0.8, (235, 235, 235))
@@ -111,7 +123,7 @@ class Drawing:
         self.rect(x, y, 23, 12, (40, 40, 140), (20, 20, 90), r=0.8)
         self.circle(x + 6, y + 6, 3, (230, 230, 230), (150, 150, 150))
         self.rect(x + 6, y + 4.8, 12, 2.4, (240, 240, 240), (150, 150, 150), r=1.2)
-        self.text(x + 11.5, y - 2, label, 1.8)
+        self.text(x + 11.5, y + 14.2 if self.turned else y - 2, label, 1.8)
         return x + 23, y + 6
 
     def usb_cable(self, at):
@@ -138,17 +150,17 @@ def wiring(path):
     dr.breadboard()
     end = dr.usb_cable(dr.board())
     dr.arrow((end[0] + 1, end[1]), (end[0] + 12, end[1]), "USB-C power supply")
-    dr.text(end[0] + 13, end[1] + 3.2, "5 V, at least 2 A", 1.6, COLOURS["arrow"], "lm")
+    dr.text(end[0] + 13, end[1] - 3.6, "5 V, at least 2 A", 1.6, COLOURS["arrow"], "lm")
     h = dr.hole
 
-    # Bus in column 2: +5 V in the upper half (f-j), GND in the lower half (a-e),
+    # Bus in column 1: +5 V in the upper half (f-j), GND in the lower half (a-e),
     # fed from the board's 5V and GND pins over the top of the breadboard
-    dr.wire([h(17, "j"), (h(17, "j")[0], dr.by - 2), (h(2, "j")[0], dr.by - 2), h(2, "j")], COLOURS["5v"])
+    dr.wire([h(17, "j"), (h(17, "j")[0], dr.by - 2), (h(1, "j")[0], dr.by - 2), h(1, "j")], COLOURS["5v"])
     dr.wire([h(16, "i"), (h(16, "i")[0], dr.by - 4.5), (dr.bx - 2, dr.by - 4.5),
-             (dr.bx - 2, h(2, "a")[1]), h(2, "a")], COLOURS["gnd"])
+             (dr.bx - 2, h(1, "a")[1]), h(1, "a")], COLOURS["gnd"])
 
-    # 2200 uF capacitor across the middle channel: + in 2f, - (stripe) in 2e
-    x, yp, yn = h(2, "f")[0], h(2, "f")[1], h(2, "e")[1]
+    # 2200 uF capacitor across the middle channel: + in 1f, - (stripe) in 1e
+    x, yp, yn = h(1, "f")[0], h(1, "f")[1], h(1, "e")[1]
     body = (x + 5.5, (yp + yn) / 2)
     for y in (yp, yn):
         dr.d.line([dr.px(x, y), dr.px(body[0] - 3, y), dr.px(body[0] - 3, body[1])],
@@ -159,7 +171,7 @@ def wiring(path):
     dr.text(body[0] + 1.5, body[1] - 1.2, "2200 µF", 1.3, (235, 235, 235))
     dr.text(body[0] + 1.5, body[1] + 2.3, "−", 1.8, (20, 20, 20))
 
-    # Servos on the left; each cable: GND (black), +5 V (red), signal
+    # Servos, drawn on the right; each cable: GND (brown), +5 V (orange), signal
     servos = [("Shoulder servo", 6, 12, "i", "d", (10, "j"), "shoulder"),
               ("Elbow servo", 6, 36, "h", "c", (11, "j"), "elbow"),
               ("Pen servo", 6, 64, "g", "b", (10, "a"), "pen")]
@@ -171,7 +183,7 @@ def wiring(path):
             dr.wire([(ox, oy - 2.4 + i * 2.4), (plug, oy - 2.4 + i * 2.4)], COLOURS[c], 0.8)
         dr.rect(plug, oy - 3.8, 3.5, 7.6, (35, 35, 35), (10, 10, 10), r=0.4)
         lane = plug + 6 + k * 7.5        # each servo's jumpers turn in their own lane
-        for i, (start, c) in enumerate(((h(2, gnd_row), "gnd"), (h(2, plus_row), "5v"), (h(*sig), colour))):
+        for i, (start, c) in enumerate(((h(1, gnd_row), "servognd"), (h(1, plus_row), "servo5v"), (h(*sig), colour))):
             y, x_turn = oy - 2.4 + i * 2.4, lane + i * 2
             if c == colour and sig[1] == "j":     # signals leave the board upwards
                 top = dr.by - 7 - k * 2.5 - (0 if colour == "shoulder" else 0)
@@ -183,18 +195,21 @@ def wiring(path):
                 route = [start, (x_turn, start[1]), (x_turn, y), (plug + 3.5, y)]
             dr.wire(route, COLOURS[c], 0.8)
 
-    # Legend
-    lx, ly = 131, 52
+    # Legend, top left
+    dr.turned = False
+    lx, ly = 4, 10
     dr.text(lx, ly - 5, "Servo cable, all three servos", 2.0, anchor="lm")
     for i, (c, name) in enumerate((("servo-", "brown: -"), ("servo+", "red: +"), ("servo-signal", "yellow: signal"))):
-        x = lx + i * 17
+        x = lx + i * 19
         dr.wire([(x, ly), (x + 5, ly)], COLOURS[c], 0.9)
         dr.text(x + 6.5, ly, name, 1.6, anchor="lm")
     ly += 9
-    dr.text(lx, ly, "Jumper wires, plugged into the servo cable", 2.0, anchor="lm")
-    for i, (c, name) in enumerate((("gnd", "GND"), ("5v", "+5 V"), ("shoulder", "shoulder (GPIO 0)"),
+    dr.text(lx, ly, "Jumper wires", 2.0, anchor="lm")
+    for i, (c, name) in enumerate((("gnd", "GND, ESP32 to breadboard"), ("servognd", "GND, breadboard to servo"),
+                                   ("5v", "+5 V, ESP32 to breadboard"),
+                                   ("servo5v", "+5 V, breadboard to servo"), ("shoulder", "shoulder (GPIO 0)"),
                                    ("elbow", "elbow (GPIO 1)"), ("pen", "pen (GPIO 3)"))):
-        y = ly + 4 + i * 3.6
+        y = ly + 4.5 + i * 4.2
         dr.wire([(lx, y), (lx + 8, y)], COLOURS[c], 0.9)
         dr.text(lx + 10, y, name, 1.8, anchor="lm")
     dr.save(path)

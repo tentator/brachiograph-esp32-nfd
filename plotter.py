@@ -8,7 +8,7 @@ import os
 from machine import Pin, PWM, I2C, SoftI2C
 from rescue import custom, event, connect, wifi_watch, wifi_state, recv, read_request, handle_update, servo_pins, Led, chip, NAME
 
-REVISION = "REV 17.0"
+REVISION = "REV 18.0"
 
 # --- 1. Self-healing OLED Driver (72x40) ---
 # The built-in framebuf font is fixed at 8x8 px, so 72x40 fits 9 chars x 5 rows.
@@ -122,38 +122,22 @@ update_oled(REVISION, "BOOTING")
 PIN_SHOULDER, PIN_ELBOW, PIN_PEN = servo_pins()
 
 # --- 3. Calibration Configuration ---
-# "arms" in customization.json picks the elbow's default direction: "wooden" (elbow servo on
-# the lower arm, as in the original BrachioGraph: +10 us per degree) or "3d-printed" (servo
-# on the upper arm: -10). The calibration on the web page overrides it either way.
-ARMS = custom.get("arms", "wooden")
+# "arms" in customization.json picks the elbow's default direction: "3d-printed" (elbow servo
+# on the upper arm, the printed arms: -10 us per degree) or "wooden" (servo on the lower arm, as
+# in the original BrachioGraph: +10). The calibration on the web page overrides it either way.
+ARMS = custom.get("arms", "3d-printed")
 if ARMS not in ("wooden", "3d-printed"):
-    event("customization.json: unknown \"arms\" %r, using \"wooden\"" % (ARMS,))
-    ARMS = "wooden"
+    event("customization.json: unknown \"arms\" %r, using \"3d-printed\"" % (ARMS,))
+    ARMS = "3d-printed"
 
-config = {
-    "L1": 80.0,          # inner arm (mm)
-    "L2": 80.0,          # outer arm (mm)
-    "s1_pw": 1500,
-    "s1_ang": -90.0,
-    "s1_slope": -10.0,
-    "s2_pw": 1500,
-    "s2_ang": 90.0,
-    "s2_slope": -10.0 if ARMS == "3d-printed" else 10.0,  # see ARMS
-    "s1_hyst": 0.0,      # hysteresis correction (us), see set_hardware
-    "s2_hyst": 0.0,
-    "pen_up": 1450,
-    "pen_down": 1850,
-    "speed": 25.0,       # drawing speed (mm/s)
-    "bed_minx": -50.0,   # drawing area (mm), used by the web page
-    "bed_maxx": 50.0,
-    "bed_miny": 80.0,
-    "bed_maxy": 150.0,
-    "flip": 0.0,         # 1: drawings turned 180 deg for someone facing the robot from the paper side
-    # Precise calibration (optional, measured on the BrachioGraph template): [angle, pulse us]
-    # pairs, sorted by angle. With two or more, they replace Park + Slope for that joint.
-    "s1_table": [],
-    "s2_table": []
-}
+# Defaults from customization.defaults.json / customization.json. L1, L2: arm lengths (mm);
+# s*_hyst: hysteresis correction (us), see set_hardware; speed: mm/s; bed_*: drawing area (mm),
+# used by the web page; flip 1: drawings turned 180 deg for someone on the paper side, 0: from
+# behind; s*_table: precise calibration, [angle, pulse us] pairs replacing Park + Slope.
+config = {k: custom[k] for k in ("L1", "L2", "s1_pw", "s1_ang", "s1_slope", "s2_pw", "s2_ang",
+                                 "s1_hyst", "s2_hyst", "pen_up", "pen_down", "speed", "bed_minx",
+                                 "bed_maxx", "bed_miny", "bed_maxy", "flip", "s1_table", "s2_table")}
+config["s2_slope"] = custom.get("s2_slope", 10.0 if ARMS == "wooden" else -10.0)  # see ARMS
 
 def check_table(table):
     # [[angle, pulse], ...] -> sorted list of float pairs, or ValueError
@@ -451,13 +435,8 @@ async def run_job():
     job["state"] = final
     update_oled(REVISION, job["state"].upper(), "%d/%d" % (job["line"], job["total"]))
 
-# --- 4. Wi-Fi: rescue.py ---
-# ESP32-C3 boards with the OLED (the 0.42" OLED board) transmit fine at full power; rescue.py's
-# 13 dBm default is meant for C3 boards without a display (the "SuperMini" kind), whose access
-# point was invisible at 20 dBm. "txpower" in customization.json overrides both.
+# --- 4. Wi-Fi: rescue.py (13 dBm on every C3, see TXPOWER there) ---
 import rescue
-if "txpower" not in custom and C3 and oled_seen:
-    rescue.TXPOWER = None
 
 IP = connect(lambda *lines: update_oled(*lines))
 

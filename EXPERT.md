@@ -8,7 +8,7 @@ simple `G0`/`G1` commands and the board plots it on its own, so the phone can sl
 disconnect meanwhile. It also runs on a classic ESP32 DevKit and the other ESP32 chips with
 Wi-Fi (S2, S3, C2, C5, C6; no OLED there), and can join an existing Wi-Fi instead of opening its own.
 
-Current version: **`plotter.py`** (REV 17.0) with its web page **`index.html`**, started by
+Current version: **`plotter.py`** (REV 18.0) with its web page **`index.html`**, started by
 **`main.py`**. The short build guide for beginners is [README.md](README.md).
 
 ---
@@ -47,14 +47,20 @@ display off on a C3 board that has none (nothing touches GPIO 5/6 then). Without
 a C3 board without a display still works: it scans for one once at boot and then leaves the
 I2C pins alone.
 
+The defaults come from `customization.defaults.json` (except those per chip); a `customization.json`
+overrides any of them, the [calibration](#calibration) keys included.
+
 | Setting in `customization.json` | Default | Effect |
 |---|---|---|
-| `"arms"` | `"wooden"` | Default elbow direction: `"wooden"` (elbow servo on the lower arm, as in the original BrachioGraph) gives S2 Slope +10, `"3d-printed"` (servo on the upper arm, the printed arms in [PARTS.md](PARTS.md)) gives −10. The calibration saved on the web page overrides it. |
+| `"arms"` | `"3d-printed"` | Default elbow direction: `"3d-printed"` (elbow servo on the upper arm, the printed arms in [PARTS.md](PARTS.md)) gives S2 Slope −10, `"wooden"` (servo on the lower arm, as in the original BrachioGraph) gives +10. The calibration saved on the web page overrides it. |
 | `"led"` | C3: `{"pin": 8, "active_low": true}`, classic ESP32: `{"pin": 2, "active_low": false}`, others: none | The board's LED, blinked as a heartbeat (see [The OLED](#the-oled)); `false` for none |
 | `"oled"` | `true` on C3, else `false` | Use the 72x40 display on GPIO 5/6 |
+| `"networks"` | `[]` | Wi-Fi networks to join, `[{"ssid": "...", "password": "..."}, ...]`, the most important first; none: the board opens its own access point (see [Wi-Fi](#wi-fi)) |
+| `"ap"` | `{"ssid": "ESP32-Plotter", "password": "plotterpassword"}` | The board's own access point (with the MAC suffix), opened when no network is joined; password 8–63 characters |
+| `"ota_password"` | `""` | Password for updates over Wi-Fi; empty: no updates over Wi-Fi |
 | `"hostname"` | `"plotter"` | The board's name on the network, `http://<hostname>-<xx>.local` (see `"mac_suffix"`) |
 | `"mac_suffix"` | `true` | Adds `-` and the last byte of the board's MAC address (`-60` for `…:65:60`, as `esptool` prints it) to the hostname and to the name of its own access point, so several boards sharing one `customization.json` stay apart. The OLED and `/status` show the full name. |
-| `"txpower"` | C3 without display: `13`; C3 with the OLED and other chips: full power; rescue mode: `13` on any C3 | Wi-Fi transmit power in dBm (2–20). Some ESP32-C3 boards (the small "SuperMini" kind without display, LED on GPIO 8) can't transmit cleanly at the full 20 dBm: on one, its access point was invisible at 20 dBm and appeared at 17 and below, at 80–87 % signal right next to it, and joining a network failed now and then. The C3 boards with the 0.42" OLED transmit fine at full power, so the plotter keeps full power when it finds the display; rescue mode doesn't know about the display and stays at 13. If an access point still doesn't show up, try `8.5`. |
+| `"txpower"` | C3: `13`; other chips: full power | Wi-Fi transmit power in dBm (2–20). ESP32-C3 boards can't transmit cleanly at the full 20 dBm: a C3 "SuperMini" (no display, LED on GPIO 8) had an invisible access point at 20 dBm that appeared at 17 and below, and a C3 board with the 0.42" OLED couldn't join a network 1 m from the router or kept dropping it; at 13 both work. If an access point still doesn't show up, try `8.5`. |
 | `"pins"` | per chip, see the table | Servo pins |
 
 - Arms: inner `L1` = 80 mm, outer `L2` = 80 mm by default; set your lengths in the web page
@@ -70,8 +76,8 @@ I2C pins alone.
   with the ESP32).
 - If GPIO 0 ever stops working, set `"pins": {"shoulder": 4}` in `customization.json`.
 
-The arm geometry and drawing area follow the original BrachioGraph: the shoulder is at (0, 0),
-the paper lies in front of it, and the default drawing area is X −50…50 mm, Y 80…150 mm
+The arm geometry follows the original BrachioGraph: the shoulder is at (0, 0),
+the paper lies in front of it, and the default drawing area is X −87…30 mm, Y 45…128 mm
 (adjustable in the web page).
 
 ---
@@ -80,8 +86,8 @@ the paper lies in front of it, and the default drawing area is X −50…50 mm, 
 
 ### flash.sh
 
-`./flash.sh` does the whole installation and later updates (Linux; `pip install --user -r
-requirements.txt` first for esptool, mpremote and mpy-cross):
+`./flash.sh` does the installation by USB and the later updates over Wi-Fi (Linux;
+`pip install --user -r requirements.txt` first for esptool, mpremote and mpy-cross):
 
 ```
 ./flash.sh [options] [port | host]
@@ -93,7 +99,7 @@ requirements.txt` first for esptool, mpremote and mpy-cross):
   --fw FILE    MicroPython firmware file to install (default: downloaded for the chip found)
   --wifi       update over Wi-Fi even if an ESP32 is plugged in
   --py         upload .py sources instead of precompiled .mpy files
-  -y, --yes    don't ask before erasing or uploading
+  -y, --yes    don't ask before erasing or uploading (keeps the board's own settings)
 ```
 
 By USB:
@@ -112,27 +118,33 @@ By USB:
   once with the control lines released afterwards (and before its first try), which frees it.
 - **MicroPython:** installed only if the board has none, or with `--firmware`. "MicroPython
   doesn't answer" can also mean a stuck board with settings on it, so erasing it then needs
-  `--firmware` or a typed *y*; `--yes` alone never erases. The firmware
+  `--firmware` or the *y* typed up front; `--yes` alone never erases. The firmware
   (`ESP32_GENERIC_<chip>-20260824-v1.29.0.bin`) is downloaded from micropython.org into
   `firmware/` and written at the right offset for the chip; `--fw FILE` uses another file (e.g.
   an S3 build with PSRAM support). Before erasing, the board's `config.json` (your calibration)
-  and, if there is none on the computer to upload instead, its `customization.json` are saved to
-  `backup/` and put back afterwards.
+  and `customization.json` are saved to `backup/` and put back afterwards, unless you chose to
+  replace them (see *Settings*).
+- **Settings:** `customization.defaults.json` always goes onto the board, your `customization.json`
+  only if the board has no settings of its own (`customization.json`, `config.json`) or if you
+  type *y* to replace them; then the board's `config.json` is deleted too, so the calibration
+  starts from the defaults and your `customization.json` again. Without a typed *y* (also with
+  `--yes`) the board keeps its settings. `config.json` itself is never uploaded.
 - **Remembering boards:** the names of boards installed from this folder go into `boards.txt`
   (not in git), so later Wi-Fi updates find them as `<name>.local`.
 - **Files:** precompiled to `.mpy` when the installed `mpy-cross` matches the board's MicroPython
   version (otherwise `.py`, with a warning), stale counterparts are deleted, `main.py` goes last,
-  then the board restarts. Nothing is copied without asking (`--yes` skips the questions);
-  answering "no" restarts the board unchanged.
-- **Permissions:** serial ports belong to the group `dialout`. Without access `flash.sh` says
-  what to do (`sudo usermod -aG dialout $USER`, then log out and in) instead of failing; don't run
-  it with `sudo`.
+  then the board restarts. It asks once up front, before touching any board, and then runs
+  through (`--yes` skips the question).
+- **Permissions:** serial ports belong to root and the group `dialout`. Not in that group:
+  `./deploy_udev.sh` (once, on the computer itself, not in a toolbox; asks for your password)
+  installs a udev rule that gives whoever is logged in access to the ESP32's USB port
+  (`uaccess`); then plug the ESP32 in again.
 - **Classic ESP32 boards** (e.g. an ESP32-D0WD-V3 DevKit with a CP210x or CH340 USB chip, usually
   `/dev/ttyUSB0`) work the same way: `esptool` reports them by package name, `flash.sh` installs
   `ESP32_GENERIC` at offset `0x1000`, and the plotter uses GPIO 25/26/27 for the servos and the
   LED on GPIO 2 (no OLED).
 - `customization.json` is optional (without it the board keeps the one it has, or opens its own
-  access point); when it's missing, `flash.sh` says so and asks whether to go on; if present
+  access point); when it's missing, `flash.sh` says so before its question; if present
   it's checked first: valid JSON, networks with `ssid` and `password`, an `ap` password of 8–63
   characters, `"arms"` `"wooden"` or `"3d-printed"`, `"oled"` true/false, `"led"` and `"pins"`
   well-formed.
@@ -147,7 +159,7 @@ Over Wi-Fi: see [Updates over Wi-Fi](#updates-over-wi-fi).
 Download the firmware from [micropython.org](https://micropython.org/download/):
 [ESP32_GENERIC_C3](https://micropython.org/download/ESP32_GENERIC_C3/) for the C3 board,
 [ESP32_GENERIC](https://micropython.org/download/ESP32_GENERIC/) for a classic ESP32. With
-[esptool](https://docs.espressif.com/projects/esptool/) (`pip install esptool`):
+[esptool](https://docs.espressif.com/projects/esptool/) (`pip install --user esptool`):
 
 ```sh
 esptool.py --chip esp32c3 --port /dev/ttyACM0 erase_flash
@@ -243,8 +255,8 @@ ap.ifconfig(('192.168.10.1', '255.255.255.0', '192.168.10.1', '8.8.8.8'))
 
 ### Wi-Fi
 
-Without a `customization.json` on the board it opens the access point above. With one, copied from
-[`customization.example.json`](customization.example.json), it sets its hostname, joins the first listed network
+With the defaults (no networks) it opens the access point above. With a `customization.json` copied
+from [`customization.defaults.json`](customization.defaults.json) and its networks and update password filled in, it sets its hostname, joins the first listed network
 that is in range (it scans up to 3 times: a single scan often misses a network that is there), and
 opens the `ap` access point only if none is. Both names get the MAC suffix (see `"mac_suffix"` in
 [Hardware](#hardware)): with `"hostname": "plotter"` and `"ap": {"ssid": "plotter"}` a board
@@ -279,7 +291,7 @@ updates goes on by USB. Before uploading anything it makes sure it found the rig
 3. It checks the password (`GET /auth`) and gets the board's MicroPython version from it, to
    precompile matching `.mpy` files. A board from before `GET /auth` is accepted if it can be
    updated at all; its password is checked with the first file.
-4. It shows what it found and asks before uploading (`--yes` skips the question).
+4. It shows what it found and uploads (the question was asked up front).
 5. It deletes stale counterparts (e.g. `plotter.py` when uploading `plotter.mpy`), uploads the
    files with `main.py` last, restarts the board and waits until it answers again with the new
    revision; if it comes back in rescue mode it prints the end of the log.
@@ -417,19 +429,21 @@ Each arm servo's pulse width is a straight line through one known point:
 pulse_us = park_pw + (angle_deg − park_angle) × slope
 ```
 
+Defaults from `customization.defaults.json`, overridden by the same keys in `customization.json`:
+
 | Field | Config key | Default | Meaning |
 |---|---|---|---|
 | S1 Park | `s1_ang` | −90 | Shoulder angle (°) at which the shoulder servo gets `s1_pw` (1500 µs) |
 | S1 Slope | `s1_slope` | −10 | µs per degree for the shoulder (negative = mounted reversed) |
 | S2 Park | `s2_ang` | 90 | Elbow angle (°) at `s2_pw` (1500 µs) |
-| S2 Slope | `s2_slope` | +10, or −10 with `"arms": "3d-printed"` | µs per degree for the elbow: negative with the elbow servo on the upper arm (3D-printed arms), positive with it on the lower arm (wooden arms); the default comes from `"arms"` in `customization.json` |
+| S2 Slope | `s2_slope` | −10, or +10 with `"arms": "wooden"` | µs per degree for the elbow: negative with the elbow servo on the upper arm (3D-printed arms), positive with it on the lower arm (wooden arms); the default comes from `"arms"` in `customization.json` |
 | Pen Up / Pen Down | `pen_up`, `pen_down` | 1450 / 1850 | Pen servo pulse widths (µs) |
 | Speed | `speed` | 25 | Drawing speed in mm/s |
 | S1 / S2 Hysteresis | `s1_hyst`, `s2_hyst` | 0 | Backlash correction in µs (see below) |
 | Inner / Outer arm | `L1`, `L2` | 80 / 80 | Arm lengths in mm, pivot to pivot (outer: elbow to pen tip) |
-| Area X/Y min/max | `bed_minx` … `bed_maxy` | −50, 50, 80, 150 | Drawing area in mm |
+| Area X/Y min/max | `bed_minx` … `bed_maxy` | −87, 30, 45, 128 | Drawing area in mm |
 | (section 8) | `s1_table`, `s2_table` | empty | Measured [angle, pulse] points of the [precise calibration](#precise-calibration-optional); with two or more they replace Park and Slope for that joint |
-| View | `flip` | 0 | 1 turns every drawing 180° for someone facing the robot from the paper side (the preview turns with it) |
+| View | `flip` | 1 | 1 turns every drawing 180° for someone in front of the robot, on the paper side; 0 for someone behind it (the preview turns with it) |
 
 Angles: shoulder 0° = arm pointing straight ahead (+Y), negative = to the left. The elbow angle
 is measured relative to the inner arm (0° = straight, 90° = right angle).
@@ -501,7 +515,7 @@ arms over 100 mm, metal-gear servos (e.g. MG90S) are strongly recommended.
 **The area warning:** under the area fields the page warns when part of the saved drawing area
 is out of reach, needs a pulse beyond the drawing limits of 750–2250 µs (the board clips it, so
 drawings come out squashed there), or needs the elbow almost straight or folded. With the default
-calibration and the standard mounting this is the case for the default area X −50…50, Y 80…150:
+calibration and the standard mounting this is the case for the original area X −50…50, Y 80…150:
 its far right corner would need about 504 µs from the shoulder. *Auto-fit Area to Arms* finds an
 area that fits.
 
@@ -806,7 +820,7 @@ The drawing area is no longer a constant in the page: it comes from the board's 
 | Lines are curved instead of straight | Calibration slopes or park angles are off; recalibrate with the test square, or do the [precise calibration](#precise-calibration-optional). |
 | ⚠ warning under the drawing area fields | Part of the area is beyond the servos' limits or reach (see [Arms and drawing area](#arms-and-drawing-area)): *Auto-fit Area to Arms*, then *Apply Config*. |
 | Precise calibration: "That doesn't fit the previous lines" | The arm isn't on the named line, or the servo is at its end: check the alignment, or *Skip This Line*. |
-| `flash.sh`: "no access to /dev/ttyUSB0" | Serial ports belong to the group `dialout`: `sudo usermod -aG dialout $USER`, then log out and in. Already in the group: log out and in (or reboot). Don't run `sudo ./flash.sh`. |
+| `flash.sh`: "no access to /dev/ttyUSB0" | Serial ports belong to root and the group `dialout`. Not in it: run `./deploy_udev.sh` once on the computer itself (not in a toolbox), then plug the ESP32 in again. In it: log out and in again. |
 | Lines are shaky or wobbly | Lower the speed; check the capacitor across the servo supply; check the arms and pen holder for play; metal-gear servos help a lot. |
 | Small steps where lines reverse, back-and-forth lines don't overlap | Servo backlash: set the hysteresis correction. |
 | Pen drags between shapes | Increase `PEN_SETTLE_MS` or lower `pen_up` (more lift). |
@@ -826,7 +840,8 @@ The drawing area is no longer a constant in the page: it comes from the board's 
 | `rescue.py` | Wi-Fi, updates over Wi-Fi, event log and the rescue server |
 | `index.html` | Its web page |
 | `ssd1306.py` | OLED driver (MicroPython standard driver) |
-| `customization.example.json` | Template for the optional `customization.json` |
+| `customization.defaults.json` | The defaults: name, access point, calibration; template for the optional `customization.json` |
+| `deploy_udev.sh` | Gives the logged-in user access to the ESP32's USB port, see [flash.sh](#flashsh) |
 | `flash.sh` | Installs and updates the board by USB or Wi-Fi, see [flash.sh](#flashsh) |
 | `requirements.txt` | The computer-side tools: esptool, mpremote, mpy-cross |
 | `README.md`, `PARTS.md` | Build guide and parts list |
@@ -852,3 +867,4 @@ Revisions (up to 15 each in its own file in the original working folder; from 16
 | 15 | Text section: up to 3 lines in Script, Block or Block bold Hershey single-stroke fonts, word wrap, largest-that-fits or fixed letter height, German umlauts; plot button renamed *Plot Drawing* |
 | 16 | Split into `main.py`, `plotter.py`, `rescue.py` (colleague's branch: joining a Wi-Fi via `customization.json`, updates over Wi-Fi with a rescue server, event log, classic ESP32 and other chips, park pose, view from the paper side, ramped glide, servos started one after another); installed as precompiled `.mpy` files (half the RAM); new `flash.sh`: finds the ESP32 by USB ID with a menu, keeps MicroPython and the calibration unless asked, any ESP32 with Wi-Fi, esptool 4 and 5, Wi-Fi updates only after checking it's the plotter and the password is right; `"arms"` setting for the elbow default; Wi-Fi errors shown on the OLED in words (wrong password, not found ...), alternating idle screen, connection-lost notice; the board's LED blinks as a heartbeat (fast while plotting, triple flash in rescue mode); "parking" state after a plot; display not retried when there is none; updates and restarts refused during a plot; board names with the MAC's last byte (`plotter-60`) for the hostname and the own access point; Wi-Fi transmit power setting (13 dBm default on C3: fixes boards whose access point was invisible); up to 3 Wi-Fi scans and no giving up on a momentary "wrong password"; `flash.sh` asks MicroPython before using esptool, frees boards left stuck by esptool's reset, never erases on `--yes` alone and saves the board's settings before erasing, remembers installed boards |
 | 17 | Optional precise calibration on the BrachioGraph template (section 8): measured points per joint replace Park/Slope, guided line by line with fine pulse buttons, optional approach from both sides that also measures the backlash for the hysteresis correction; *Draw 1 cm Grid* to check on the template; warning when the drawing area is beyond the servos' limits or reach; full Wi-Fi power on C3 boards with the OLED (13 dBm only without display); `flash.sh` asks before going on without `customization.json` (and no longer stops at the end without it), explains missing serial port permissions; SVG paths made of several pieces no longer get stray connecting lines; BrachioGraph template and example SVGs in `images/`; includes PR #3 (out-of-reach targets refused, one moving command at a time, classic ESP32 pins 25/26/27, new STLs) |
+| 18 | Works out of the box: the defaults, calibration included, in `customization.defaults.json`, overridden by an optional `customization.json` (a copy with your networks and update password filled in); 3D-printed arms, the view from the paper side and a drawing area the arms reach without hitting the servo limits (X −87…30, Y 45…128) are the defaults; `flash.sh` keeps the board's own settings unless you type *y* to replace them, asks once up front, runs without `sudo` (`deploy_udev.sh` gives access to the USB port without the group `dialout`) and names only `http://<name>.local` after flashing; wiring picture turned (ESP32 left, servos right, brown and orange jumpers to the servos) and photos for steps 6 and 8; 13 dBm transmit power on every C3 again (full power broke the Wi-Fi of a C3 OLED board) |
