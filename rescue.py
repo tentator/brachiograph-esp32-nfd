@@ -9,42 +9,96 @@ import os
 import time
 import uasyncio as asyncio
 
-# customization.defaults.json, overridden by the optional customization.json (a copy of it):
-# this board's name, Wi-Fi, update password, pins and default calibration. Set on the computer and uploaded by flash.sh; never served over HTTP. The
-# calibration set on the web page lives in config.json.
-custom_error = None
-custom = {}
-for name in ("customization.defaults.json", "customization.json"):
+# Board settings (name, Wi-Fi, update password, access point, hardware): board_default_settings.json
+# (from git, uploaded by flash.sh with every update), overridden key by key by the optional
+# board_settings.json (yours, uploaded by flash.sh when it is next to it; the board keeps its own
+# otherwise). Never served over HTTP. The calibration is separate, see plotter.py.
+DEFAULTS_FILE, SETTINGS_FILE = "board_default_settings.json", "board_settings.json"
+CAL_DEFAULTS_FILE, CAL_FILE = "board_default_calibration.json", "board_calibration.json"
+# The only defaults in the code: enough to open an access point and be repaired over Wi-Fi if
+# board_default_settings.json is missing or broken
+FALLBACK = {"hostname": "plotter", "mac_suffix": True, "networks": [],
+            "ap": {"ssid": "ESP32-Plotter", "password": "plotterpassword"}}
+notes = []  # for /log, once event() exists
+
+def read_json(name):
     try:
         with open(name) as f:
-            custom.update(json.load(f))
+            return json.load(f)
     except OSError:
-        pass
-    except ValueError as e:  # a typo in the file must not stop the boot: defaults, error in /log
-        custom_error = e
+        return None  # not there
+    except ValueError as e:  # a typo must not stop the boot: carry on without it, error in /log
+        notes.append("%s invalid, ignored: %r" % (name, e))
+        return None
+
+def exists(name):
+    try:
+        os.stat(name)
+        return True
+    except OSError:
+        return False
+
+def migrate():
+    # Up to REV 17 the settings were in customization.json and the calibration in config.json
+    if exists("config.json") and not exists(CAL_FILE):
+        os.rename("config.json", CAL_FILE)
+        notes.append("config.json -> %s" % CAL_FILE)
+    if exists("customization.json") and not exists(SETTINGS_FILE):
+        old = read_json("customization.json") or {}
+        cal_keys = read_json(CAL_DEFAULTS_FILE) or {}
+        mine = {k: v for k, v in old.items() if k not in cal_keys and k != "arms"}
+        with open(SETTINGS_FILE, "w") as f:
+            json.dump(mine, f)
+        # Calibration values in it join the calibration file; what is already there wins
+        cal = {k: v for k, v in old.items() if k in cal_keys}
+        if cal:
+            cal.update(read_json(CAL_FILE) or {})
+            with open(CAL_FILE, "w") as f:
+                json.dump(cal, f)
+        os.remove("customization.json")
+        notes.append("customization.json -> %s" % SETTINGS_FILE)
+
+try:
+    migrate()
+except OSError as e:
+    notes.append("settings migration failed: %r" % e)
+
+defaults = read_json(DEFAULTS_FILE)
+if defaults is None:
+    notes.append("%s missing or broken: only an access point (flash.sh puts it back)" % DEFAULTS_FILE)
+    defaults = FALLBACK
+own = read_json(SETTINGS_FILE) or {}
+settings = dict(defaults)
+settings.update(own)
 
 def chip():
     # "ESP32C3 module with ESP32-C3" -> "ESP32C3", "Generic ESP32 module with ESP32" -> "ESP32"
     return os.uname().machine.split()[-1].replace("-", "")
 
+def for_chip(value):
+    # Settings that differ by chip are maps {"*": for any chip, "ESP32C3": ..., "ESP32": ...}
+    if isinstance(value, dict) and "*" in value:
+        return value.get(chip(), value["*"])
+    return value
+
+def setting(name):
+    return for_chip(settings.get(name))
+
 def servo_pins():
-    # (shoulder, elbow, pen): classic ESP32 (WROOM) DevKit GPIO 25/26/27 (GPIO 34-39 are input
-    # only), ESP32-S2/S3 GPIO 4/5/6 (26 and up are flash pins there), ESP32-C2/C3/C5/C6 GPIO 0/1/3
-    # (the C3 OLED board's wiring);
-    # "pins" in customization.json overrides any of them, e.g. {"shoulder": 4} if GPIO 0 was damaged
-    pins = dict(zip(("shoulder", "elbow", "pen"),
-                    {"ESP32": (25, 26, 27), "ESP32S2": (4, 5, 6), "ESP32S3": (4, 5, 6)}.get(chip(), (0, 1, 3))))
-    pins.update(custom.get("pins", {}))
-    return pins["shoulder"], pins["elbow"], pins["pen"]
+    # (shoulder, elbow, pen) from "pins": the chip's defaults, then any joints set in
+    # board_settings.json, e.g. {"shoulder": 4} if GPIO 0 was damaged. () if unknown.
+    pins = dict(for_chip(defaults.get("pins")) or {})
+    pins.update(for_chip(own.get("pins")) or {})
+    try:
+        return pins["shoulder"], pins["elbow"], pins["pen"]
+    except KeyError:
+        return ()
 
 class Led:
-    # The board's own LED, blinked as a heartbeat. ESP32-C3 boards: GPIO 8, lit when low;
-    # classic ESP32 DevKit: GPIO 2, lit when high; other chips: none (S3 boards have an RGB
-    # LED that needs a driver). "led" in customization.json overrides: {"pin": 8,
-    # "active_low": true}, or false for none.
+    # The board's own LED, blinked as a heartbeat: "led" in the settings, {"pin": 8,
+    # "active_low": true} or false for none (S3 boards have an RGB LED that needs a driver)
     def __init__(self):
-        led = custom.get("led", {"ESP32C3": {"pin": 8, "active_low": True},
-                                 "ESP32": {"pin": 2, "active_low": False}}.get(chip()))
+        led = setting("led")
         self.pin, self.low = None, False
         if led:
             if led["pin"] in servo_pins():
@@ -76,26 +130,25 @@ def event(msg):
         pass  # flash full or failing: the log must never stop the board
 
 event("boot, reset cause %d" % machine.reset_cause())
-if custom_error:
-    event("customization.json invalid, using defaults: %r" % custom_error)
+for n in notes:
+    event(n)
 
 JOIN_TIMEOUT_S = 30  # 15 s was too short on a weak signal: the board fell back to its own AP
 ERROR_SHOW_MS = 2500  # how long a Wi-Fi error stays on the OLED before the board moves on
 # Why the board is on its own access point instead of a network, for the OLED and /log
 wifi_state = {"problem": None}
-DEFAULT_AP = ("ESP32-Plotter", "plotterpassword")
+DEFAULT_AP = (FALLBACK["ap"]["ssid"], FALLBACK["ap"]["password"])
 SCANS = 3  # a single scan often misses a network that is there
 
 # "-60": the last byte of the board's MAC address (as esptool prints it), added to the hostname
-# and the access point's name, so boards sharing one customization.json stay apart.
-# "mac_suffix": false in customization.json turns it off.
-SUFFIX = "-%02x" % machine.unique_id()[-1] if custom.get("mac_suffix", True) else ""
-NAME = custom.get("hostname", "plotter") + SUFFIX  # also http://<NAME>.local where mDNS works
+# and the access point's name, so boards sharing one board_settings.json stay apart
+SUFFIX = "-%02x" % machine.unique_id()[-1] if settings.get("mac_suffix", True) else ""
+NAME = settings.get("hostname", FALLBACK["hostname"]) + SUFFIX  # also http://<NAME>.local where mDNS works
 
-# Transmit power in dBm, "txpower" in customization.json. ESP32-C3 boards default to 13: at the
-# full 20 dBm the access point of a C3 "SuperMini" was invisible, and a C3 OLED board couldn't
+# Transmit power in dBm, null for the chip's full power. The defaults give ESP32-C3 boards 13: at
+# the full 20 dBm the access point of a C3 "SuperMini" was invisible, and a C3 OLED board couldn't
 # join a network 1 m from the router or kept dropping it; at 13 both work.
-TXPOWER = custom.get("txpower", 13 if chip() == "ESP32C3" else None)
+TXPOWER = setting("txpower")
 
 def set_txpower(wlan):
     if TXPOWER:
@@ -155,7 +208,7 @@ def join_wifi(networks, show):
     else:
         # Not in the scan: out of range, 5 GHz only (the ESP32 has 2.4 GHz only) or a typo
         wifi_state["problem"] = "not in range: " + ", ".join(n["ssid"] for n in networks)
-        event("no network from customization.json in range; seen: " + ", ".join(sorted(set(seen))))
+        event("no network from the settings in range; seen: " + ", ".join(sorted(set(seen))))
         show("NO WIFI", "not in range", networks[0]["ssid"])
         time.sleep_ms(ERROR_SHOW_MS)
     sta.active(False)
@@ -179,15 +232,15 @@ def start_ap(ssid, password):
     return ap.ifconfig()[0]
 
 def connect(show=print):
-    # Joins the first network from customization.json that is in range, otherwise opens
+    # Joins the first network from the settings that is in range, otherwise opens
     # the board's own access point. Returns the board's IP.
     sta = network.WLAN(network.STA_IF)
     if sta.isconnected():
         return sta.ifconfig()[0]
     network.hostname(NAME)  # before any interface is active
     event("name %s, txpower %s" % (NAME, TXPOWER or "default"))
-    ap = custom.get("ap", {})
-    return (custom.get("networks") and join_wifi(custom["networks"], show)) or \
+    ap = settings.get("ap") or {}
+    return (settings.get("networks") and join_wifi(settings["networks"], show)) or \
         start_ap(ap.get("ssid", DEFAULT_AP[0]) + SUFFIX, ap.get("password", DEFAULT_AP[1]))
 
 async def wifi_watch(show=None):
@@ -213,7 +266,7 @@ async def wifi_watch(show=None):
         event("Wi-Fi lost, status %d" % sta.status())
         sta.active(True)
         set_txpower(sta)
-        for n in custom["networks"]:
+        for n in settings["networks"]:
             try:
                 sta.connect(n["ssid"], n["password"])
             except OSError as e:
@@ -228,9 +281,9 @@ async def wifi_watch(show=None):
                 break
             sta.disconnect()
 
-# Updates over Wi-Fi (flash.sh without USB) need "ota_password" in customization.json
-OTA_AUTH = custom.get("ota_password") and \
-    b"Basic " + binascii.b2a_base64(b"ota:" + custom["ota_password"].encode()).strip()
+# Updates over Wi-Fi (flash.sh without USB) need "ota_password" in board_settings.json
+OTA_AUTH = settings.get("ota_password") and \
+    b"Basic " + binascii.b2a_base64(b"ota:" + settings["ota_password"].encode()).strip()
 def recv(awaitable, timeout_s=10):
     # A client that sends nothing would otherwise hold one of the few sockets for good
     return asyncio.wait_for(awaitable, timeout_s)
@@ -345,7 +398,7 @@ def serve(error):
         ip = connect()
         await asyncio.start_server(client, "0.0.0.0", 80)
         event("rescue server on http://%s/" % ip)
-        if custom.get("networks"):
+        if settings.get("networks"):
             asyncio.create_task(wifi_watch())
         # Three quick LED flashes every 2 s: rescue mode, as opposed to the plotter's slow heartbeat
         led = Led()

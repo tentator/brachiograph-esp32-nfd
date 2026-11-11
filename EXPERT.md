@@ -41,27 +41,47 @@ Current version: **`plotter.py`** (REV 18.0) with its web page **`index.html`**,
 Wire colours used in the README's wiring diagram (`images/wiring.png`, drawn by
 `images/draw.py`): black GND, red +5 V, green shoulder, yellow elbow, white pen.
 
-The script picks the column from the chip it runs on; `"pins"` in `customization.json`
-overrides single servo pins, e.g. `"pins": {"shoulder": 4}`. `"oled": false` switches the
-display off on a C3 board that has none (nothing touches GPIO 5/6 then). Without that setting
-a C3 board without a display still works: it scans for one once at boot and then leaves the
-I2C pins alone.
+### Settings files
 
-The defaults come from `customization.defaults.json` (except those per chip); a `customization.json`
-overrides any of them, the [calibration](#calibration) keys included.
+Two kinds of settings, each with its defaults in exactly one file in git:
 
-| Setting in `customization.json` | Default | Effect |
+| | Defaults (in git, uploaded with every update) | Your own | Where yours live |
+|---|---|---|---|
+| **Board settings**: name, Wi-Fi, passwords, access point, transmit power, pins, LED, display | `board_default_settings.json` | `board_settings.json` | On your computer next to `flash.sh` (not in git: it holds passwords); `flash.sh` sends it to the board |
+| **Calibration**: arm lengths, Park/Slope, pen, speed, drawing area, view, measured points | `board_default_calibration.json` | `board_calibration.json` | Only on the board, written by *Apply Config* and the precise calibration |
+
+- The board reads the defaults first and then yours on top, key by key. Your files only need the
+  keys you change; new settings in later versions come from the defaults. The code itself holds no
+  defaults, except an emergency access point in `rescue.py` for when the defaults file is missing.
+- **`flash.sh` and the board settings:** with a `board_settings.json` next to `flash.sh`, it goes to
+  the board (checked first); without one, the board keeps the settings it has, and a new board starts
+  with the defaults. Start yours with `cp board_default_settings.json board_settings.json`.
+- **The calibration stays on the board:** `flash.sh` never uploads or replaces it. It saves it and
+  puts it back around a reinstall (`--firmware`); `./flash.sh --get-calibration` copies it to
+  `boards/<name>-calibration.json` on your computer (`GET /calibration` over Wi-Fi). Only the values
+  that differ from the defaults are saved, so a later change of a default still reaches the others.
+- Boards from REV 17 and earlier convert themselves at the first start: `customization.json` becomes
+  `board_settings.json` (its calibration values and `"arms"` aside), `config.json` becomes
+  `board_calibration.json`. A local `customization.json` is copied to `board_settings.json` by
+  `flash.sh` (the original stays; delete it when you like).
+
+**Board settings** (in `board_settings.json`; keys starting with `_` are comments):
+
+| Setting | Default | Effect |
 |---|---|---|
-| `"arms"` | `"3d-printed"` | Default elbow direction: `"3d-printed"` (elbow servo on the upper arm, the printed arms in [PARTS.md](PARTS.md)) gives S2 Slope −10, `"wooden"` (servo on the lower arm, as in the original BrachioGraph) gives +10. The calibration saved on the web page overrides it. |
-| `"led"` | C3: `{"pin": 8, "active_low": true}`, classic ESP32: `{"pin": 2, "active_low": false}`, others: none | The board's LED, blinked as a heartbeat (see [The OLED](#the-oled)); `false` for none |
-| `"oled"` | `true` on C3, else `false` | Use the 72x40 display on GPIO 5/6 |
 | `"networks"` | `[]` | Wi-Fi networks to join, `[{"ssid": "...", "password": "..."}, ...]`, the most important first; none: the board opens its own access point (see [Wi-Fi](#wi-fi)) |
 | `"ap"` | `{"ssid": "ESP32-Plotter", "password": "plotterpassword"}` | The board's own access point (with the MAC suffix), opened when no network is joined; password 8–63 characters |
-| `"ota_password"` | `""` | Password for updates over Wi-Fi; empty: no updates over Wi-Fi |
+| `"ota_password"` | `""` | Password for updates over Wi-Fi; empty: no updates over Wi-Fi. `flash.sh` needs it in your `board_settings.json` to update a board over Wi-Fi |
 | `"hostname"` | `"plotter"` | The board's name on the network, `http://<hostname>-<xx>.local` (see `"mac_suffix"`) |
-| `"mac_suffix"` | `true` | Adds `-` and the last byte of the board's MAC address (`-60` for `…:65:60`, as `esptool` prints it) to the hostname and to the name of its own access point, so several boards sharing one `customization.json` stay apart. The OLED and `/status` show the full name. |
-| `"txpower"` | C3: `13`; other chips: full power | Wi-Fi transmit power in dBm (2–20). ESP32-C3 boards can't transmit cleanly at the full 20 dBm: a C3 "SuperMini" (no display, LED on GPIO 8) had an invisible access point at 20 dBm that appeared at 17 and below, and a C3 board with the 0.42" OLED couldn't join a network 1 m from the router or kept dropping it; at 13 both work. If an access point still doesn't show up, try `8.5`. |
-| `"pins"` | per chip, see the table | Servo pins |
+| `"mac_suffix"` | `true` | Adds `-` and the last byte of the board's MAC address (`-60` for `…:65:60`, as `esptool` prints it) to the hostname and to the name of its own access point, so several boards sharing one `board_settings.json` stay apart. The OLED and `/status` show the full name. |
+| `"txpower"` | C3: `13`; other chips: `null` (full power) | Wi-Fi transmit power in dBm (2–20). ESP32-C3 boards can't transmit cleanly at the full 20 dBm: a C3 "SuperMini" (no display, LED on GPIO 8) had an invisible access point at 20 dBm that appeared at 17 and below, and a C3 board with the 0.42" OLED couldn't join a network 1 m from the router or kept dropping it; at 13 both work. If an access point still doesn't show up, try `8.5`. |
+| `"oled"` | C3: `true`, else `false` | Use the 72x40 display on GPIO 5/6; `false` on a C3 board without one (nothing touches GPIO 5/6 then). A C3 board without a display also works with `true`: it scans once at boot and then leaves the I2C pins alone. |
+| `"led"` | C3: `{"pin": 8, "active_low": true}`, classic ESP32: `{"pin": 2, "active_low": false}`, else `false` | The board's LED, blinked as a heartbeat (see [The OLED](#the-oled)); `false` for none |
+| `"pins"` | per chip, see the table above | Servo pins; yours only need the joints you change, e.g. `{"shoulder": 4}` |
+
+Settings that differ by chip are written in `board_default_settings.json` as a map: `"*"` for any
+chip, or a chip name (`ESP32`, `ESP32C3`, `ESP32S3` ...), e.g. `"txpower": {"*": null, "ESP32C3": 13}`.
+Yours can be a plain value (`"txpower": 8.5`) or such a map.
 
 - Arms: inner `L1` = 80 mm, outer `L2` = 80 mm by default; set your lengths in the web page
   (see [Arms and drawing area](#arms-and-drawing-area)).
@@ -74,7 +94,7 @@ overrides any of them, the [calibration](#calibration) keys included.
   Three servos starting together can draw over 1 A; if the board resets or the OLED glitches,
   use a stronger USB power supply or feed the servos from a separate 5 V supply (common ground
   with the ESP32).
-- If GPIO 0 ever stops working, set `"pins": {"shoulder": 4}` in `customization.json`.
+- If GPIO 0 ever stops working, set `"pins": {"shoulder": 4}` in `board_settings.json`.
 
 The arm geometry follows the original BrachioGraph: the shoulder is at (0, 0),
 the paper lies in front of it, and the default drawing area is X −87…30 mm, Y 45…128 mm
@@ -93,48 +113,61 @@ the paper lies in front of it, and the default drawing area is X −87…30 mm, 
 ./flash.sh [options] [port | host]
 
   port         serial port of the ESP32: /dev/ttyACM0, ttyUSB0, ACM0 ... (default: found by itself)
-  host         update over Wi-Fi at this address, e.g. plotter.local or 192.168.4.1
+  host         update over Wi-Fi at this address, e.g. plotter-60.local or 192.168.4.1
   -l, --list   show the ESP32s found on USB and Wi-Fi, change nothing
-  --firmware   (re)install MicroPython by USB; erases the flash, config.json is kept
+  --get-calibration
+               copy the board's calibration to boards/<name>-calibration.json, change nothing
+  --firmware   (re)install MicroPython by USB; erases the board, its settings are put back
   --fw FILE    MicroPython firmware file to install (default: downloaded for the chip found)
   --wifi       update over Wi-Fi even if an ESP32 is plugged in
   --py         upload .py sources instead of precompiled .mpy files
-  -y, --yes    don't ask before erasing or uploading (keeps the board's own settings)
+  -y, --yes    don't ask (a board without MicroPython is still only erased with --firmware)
+  -v, --verbose
+               show every step and the tools' output
 ```
+
+**Output:** a normal run prints a few lines: which board it found, its one question, what it
+does, and when done the board's address. `--verbose` shows every step, the files on the board and
+the tools' own output (esptool, mpremote, each uploaded file). When something fails, the last
+lines of the failing tool's output are always shown.
+
+**One question per run:** *Copy the plotter REV 18.0 to plotter-60?* (by USB), *Upload ... and
+restart it?* (over Wi-Fi), or for a board on which MicroPython doesn't answer: *Install
+MicroPython and the plotter? This ERASES the board.* That last one is never answered by `--yes`:
+"doesn't answer" can also mean a stuck board with settings on it, so erasing needs a typed *y* or
+`--firmware`.
 
 By USB:
 
 - **Finding the board:** it looks at `/dev/ttyACM*` and `/dev/ttyUSB*` and keeps the ports
   whose USB ID is a usual ESP32 connection: Espressif's built-in USB (`303a`, C3/S3/C6 boards),
   CP210x (`10c4:ea60`), CH340/CH9102 (`1a86`), FTDI (`0403`). Other devices, e.g. a laptop's
-  mobile modem on `/dev/ttyACM0`, are skipped with a note. If several ports remain it shows a
-  numbered list to choose from; `./flash.sh ACM1` picks one directly.
+  mobile modem on `/dev/ttyACM0`, are skipped. If several ports remain it shows a numbered list to
+  choose from; `./flash.sh ACM1` picks one directly.
 - **What's on it:** it asks MicroPython first (`mpremote`): its version, the chip, the MAC (for
-  the board's name, printed as *It will be called 'plotter-60'*) and the board's own
-  `customization.json`. Only if MicroPython doesn't answer does it use `esptool chip-id` to name
-  the chip (ESP32-C3, -S3, -C6 ..., or a classic ESP32); chips without Wi-Fi (ESP32-H2, -P4) are
-  refused. Works with esptool 4 and 5. On boards with native USB (C3, S3, C6), `esptool`'s reset
-  can leave the chip held in reset so that `mpremote` gets no answer; `flash.sh` opens the port
-  once with the control lines released afterwards (and before its first try), which frees it.
-- **MicroPython:** installed only if the board has none, or with `--firmware`. "MicroPython
-  doesn't answer" can also mean a stuck board with settings on it, so erasing it then needs
-  `--firmware` or the *y* typed up front; `--yes` alone never erases. The firmware
+  the board's name, e.g. *Found plotter-60*) and the board's own hostname. Only if MicroPython
+  doesn't answer does it use `esptool chip-id` to name the chip (ESP32-C3, -S3, -C6 ..., or a
+  classic ESP32); chips without Wi-Fi (ESP32-H2, -P4) are refused. Works with esptool 4 and 5. On
+  boards with native USB (C3, S3, C6), `esptool`'s reset can leave the chip held in reset so that
+  `mpremote` gets no answer; `flash.sh` opens the port once with the control lines released
+  afterwards (and before its first try), which frees it.
+- **MicroPython:** installed only if the board has none, or with `--firmware`. The firmware
   (`ESP32_GENERIC_<chip>-20260824-v1.29.0.bin`) is downloaded from micropython.org into
   `firmware/` and written at the right offset for the chip; `--fw FILE` uses another file (e.g.
-  an S3 build with PSRAM support). Before erasing, the board's `config.json` (your calibration)
-  and `customization.json` are saved to `backup/` and put back afterwards, unless you chose to
-  replace them (see *Settings*).
-- **Settings:** `customization.defaults.json` always goes onto the board, your `customization.json`
-  only if the board has no settings of its own (`customization.json`, `config.json`) or if you
-  type *y* to replace them; then the board's `config.json` is deleted too, so the calibration
-  starts from the defaults and your `customization.json` again. Without a typed *y* (also with
-  `--yes`) the board keeps its settings. `config.json` itself is never uploaded.
+  an S3 build with PSRAM support). Before erasing, the board's own files (`board_calibration.json`,
+  its `board_settings.json` if you have none here, and `config.json`/`customization.json` of
+  earlier versions) are saved to `backup/` and put back afterwards.
+- **Files:** `board_default_settings.json` and `board_default_calibration.json` always, your
+  `board_settings.json` if it's next to `flash.sh` (checked first, see below), the code precompiled
+  to `.mpy` when the installed `mpy-cross` matches the board's MicroPython version (otherwise
+  `.py`, with a note), stale counterparts deleted, `main.py` last, then the board restarts. The
+  calibration is never uploaded (see [Settings files](#settings-files)).
+- **`board_settings.json` checks:** valid JSON, networks with `ssid` and `password`, an `ap`
+  password of 8–63 characters, `"mac_suffix"` and `"oled"` true/false, `"led"`, `"txpower"` and
+  `"pins"` well-formed. Calibration keys and unknown keys are reported and ignored (e.g. `"arms"`,
+  replaced by S2 Slope on the web page).
 - **Remembering boards:** the names of boards installed from this folder go into `boards.txt`
   (not in git), so later Wi-Fi updates find them as `<name>.local`.
-- **Files:** precompiled to `.mpy` when the installed `mpy-cross` matches the board's MicroPython
-  version (otherwise `.py`, with a warning), stale counterparts are deleted, `main.py` goes last,
-  then the board restarts. It asks once up front, before touching any board, and then runs
-  through (`--yes` skips the question).
 - **Permissions:** serial ports belong to root and the group `dialout`. Not in that group:
   `./deploy_udev.sh` (once, on the computer itself, not in a toolbox; asks for your password)
   installs a udev rule that gives whoever is logged in access to the ESP32's USB port
@@ -143,11 +176,6 @@ By USB:
   `/dev/ttyUSB0`) work the same way: `esptool` reports them by package name, `flash.sh` installs
   `ESP32_GENERIC` at offset `0x1000`, and the plotter uses GPIO 25/26/27 for the servos and the
   LED on GPIO 2 (no OLED).
-- `customization.json` is optional (without it the board keeps the one it has, or opens its own
-  access point); when it's missing, `flash.sh` says so before its question; if present
-  it's checked first: valid JSON, networks with `ssid` and `password`, an `ap` password of 8–63
-  characters, `"arms"` `"wooden"` or `"3d-printed"`, `"oled"` true/false, `"led"` and `"pins"`
-  well-formed.
 
 Talking to the board over USB stops the running plotter, as Thonny does: `flash.sh` always ends
 with a restart, but don't leave a serial monitor open while plotting.
@@ -184,7 +212,8 @@ precompiling below. By hand, these files go on the board:
 | `plotter.py` | `plotter.mpy` (precompiled) (the plotter) |
 | `ssd1306.py` | `ssd1306.mpy` (precompiled) (display driver) |
 | `index.html` | `index.html` (the web page) |
-| `customization.json` | `customization.json` (optional, see [Wi-Fi](#wi-fi)) |
+| `board_default_settings.json`, `board_default_calibration.json` | the same (the defaults; the plotter doesn't start without them) |
+| `board_settings.json` | `board_settings.json` (optional, see [Settings files](#settings-files)) |
 | `main.py` | `main.py` (runs automatically at boot, starts the plotter; copy it last) |
 
 **Why precompiled:** the ESP32-C3 has little RAM, and MicroPython normally compiles each `.py`
@@ -193,15 +222,16 @@ MicroPython 1.29 (the Linux build with a limited heap, so relative numbers): REV
 which run on the board, needed about 106 and 88 KB; REV 11, which didn't start at all (not even
 the Wi-Fi), about 148 KB. REV 16 as `.py` sources needs about 133 KB (it still started on an
 ESP32-C3 OLED board, so the real limit is somewhat higher), as `.mpy` files about 65 KB. REV 17
-(with the precise calibration) needs about 71 KB as `.mpy` and about 154 KB as `.py`: install
-it with `flash.sh`, which uploads `.mpy` files. `mpy-cross` (installed by `requirements.txt`) compiles on the computer;
+(with the precise calibration) needs about 71 KB as `.mpy` and about 154 KB as `.py`, REV 18
+about 75 and 157 KB: install it with `flash.sh`, which uploads `.mpy` files. `mpy-cross` (installed by `requirements.txt`) compiles on the computer;
 its version must match the board's MicroPython (1.29 here):
 
 ```sh
 mpy-cross rescue.py && mpy-cross plotter.py && mpy-cross ssd1306.py
 mpremote rm :rescue.py + rm :plotter.py + rm :ssd1306.py   # if there: a .py is loaded before the .mpy
 mpremote cp rescue.mpy :rescue.mpy + cp plotter.mpy :plotter.mpy + cp ssd1306.mpy :ssd1306.mpy \
-  + cp index.html :index.html + cp main.py :main.py + reset
+  + cp index.html :index.html + cp board_default_settings.json :board_default_settings.json \
+  + cp board_default_calibration.json :board_default_calibration.json + cp main.py :main.py + reset
 ```
 
 If the plotter doesn't fit in RAM (or fails for any other reason), the board starts the rescue
@@ -215,7 +245,8 @@ device*), for experiments: expect less free RAM.
 
 Two more files appear on the board by themselves:
 
-- `config.json`: calibration settings, created the first time you press *Apply Config*.
+- `board_calibration.json`: this board's calibration, created the first time you press *Apply
+  Config* (only what differs from the defaults).
 - `job.gcode`: the last uploaded drawing (replaced by each new plot).
 
 ---
@@ -240,7 +271,7 @@ RESET or power-cycle the board.
 Then:
 
 1. Connect your phone or laptop to the Wi-Fi **`ESP32-Plotter`**, password
-   **`plotterpassword`** (or the network and name from your `customization.json`, see [Wi-Fi](#wi-fi)).
+   **`plotterpassword`** (or the network and name from your `board_settings.json`, see [Wi-Fi](#wi-fi)).
 2. Open **`http://192.168.4.1`**. Type the `http://`, as browsers otherwise try https.
    On phones, turn mobile data off so the phone doesn't avoid a Wi-Fi network without internet.
 
@@ -255,12 +286,12 @@ ap.ifconfig(('192.168.10.1', '255.255.255.0', '192.168.10.1', '8.8.8.8'))
 
 ### Wi-Fi
 
-With the defaults (no networks) it opens the access point above. With a `customization.json` copied
-from [`customization.defaults.json`](customization.defaults.json) and its networks and update password filled in, it sets its hostname, joins the first listed network
+With the defaults (no networks) it opens the access point above. With a `board_settings.json` copied
+from [`board_default_settings.json`](board_default_settings.json) and its networks and update password filled in, it sets its hostname, joins the first listed network
 that is in range (it scans up to 3 times: a single scan often misses a network that is there), and
 opens the `ap` access point only if none is. Both names get the MAC suffix (see `"mac_suffix"` in
 [Hardware](#hardware)): with `"hostname": "plotter"` and `"ap": {"ssid": "plotter"}` a board
-whose MAC ends in `60` is `plotter-60` on the network and opens the access point `plotter-60`. `customization.json` holds passwords:
+whose MAC ends in `60` is `plotter-60` on the network and opens the access point `plotter-60`. `board_settings.json` holds passwords:
 it is in `.gitignore`, keep it out of the repository. Joined to a network, the board gets its
 address from that network's DHCP (shown on the OLED and in the shell); the hostname also works
 as `http://<hostname>-<xx>.local` where mDNS is available. If no network could be joined, the OLED
@@ -278,7 +309,7 @@ password shorter than 8 characters and network entries without `ssid` or `passwo
 ### Updates over Wi-Fi
 
 `./flash.sh` without the ESP32 on USB (or `./flash.sh --wifi`, or `./flash.sh <host>`) updates the
-board over Wi-Fi; it needs an `ota_password` in `customization.json`, and the first version with
+board over Wi-Fi; it needs an `ota_password` in `board_settings.json`, and the first version with
 updates goes on by USB. Before uploading anything it makes sure it found the right thing:
 
 1. It looks for the board at the given host, else at the boards installed from this folder
@@ -316,17 +347,17 @@ Three lines of 9 characters (the built-in MicroPython font is a fixed 8x8 px, so
 
 | Display | Meaning |
 |---|---|
-| `REV 16.0` / name / IP | Server running on your network, e.g. `plotter-60` and its IP |
-| `REV 16.0` / `AP <name>` / IP | Server running on the board's own access point |
-| `REV 16.0` / `NO WIFI` / reason, alternating with `REV 16.0` / `AP <name>` / IP | Couldn't join the networks from `customization.json` (see [Wi-Fi](#wi-fi)) |
-| `WIFI` / `scanning` / `2/3` | The networks from `customization.json` weren't in the first scan, scanning again |
+| `REV 18.0` / name / IP | Server running on your network, e.g. `plotter-60` and its IP |
+| `REV 18.0` / `AP <name>` / IP | Server running on the board's own access point |
+| `REV 18.0` / `NO WIFI` / reason, alternating with `REV 18.0` / `AP <name>` / IP | Couldn't join the networks from `board_settings.json` (see [Wi-Fi](#wi-fi)) |
+| `WIFI` / `scanning` / `2/3` | The networks from `board_settings.json` weren't in the first scan, scanning again |
 | `WIFI` / network / `joining` (then `25 s`, `20 s` ...) | Joining a network at boot |
 | `WIFI LOST` / `rejoining` | Connection dropped, rejoining |
 | `PARKING` / `120/840` | Plot ended or stopped, the arm is on its way to park |
 | `UPLOADING` / `840 pts` | Receiving a drawing |
 | `PLOTTING` / `120/840` / `14%` | Plotting, line 120 of 840 (updated every 5 s) |
 | `PAUSED` / `120/840` | Plot paused |
-| `REV 16.0` / `DONE` (or `STOPPED`, `ERROR`) / `840/840` | Plot ended |
+| `REV 18.0` / `DONE` (or `STOPPED`, `ERROR`) / `840/840` | Plot ended |
 | `S:-45` / `E:90` / `PEN UP` | After a jog or angle command |
 | `NO SERVER` / `PRESS RST` | Port 80 still in use after a soft reboot; press RESET |
 
@@ -382,7 +413,7 @@ the motion), and only the progress is updated every 5 s.
    [below](#image-to-plot-conversion).
 6. **Text.** Writes your text in a single-stroke font; see [below](#text).
 7. **Live Calibration.** Calibration, speed, hysteresis correction, arm lengths and drawing
-   area; saved to `config.json` on the board and loaded at every boot. See
+   area; saved to `board_calibration.json` on the board and loaded at every boot. See
    [Calibration](#calibration).
 
 ### Plotting
@@ -429,14 +460,16 @@ Each arm servo's pulse width is a straight line through one known point:
 pulse_us = park_pw + (angle_deg − park_angle) × slope
 ```
 
-Defaults from `customization.defaults.json`, overridden by the same keys in `customization.json`:
+Defaults from `board_default_calibration.json` (the only place they are kept); what you set on the
+web page is saved on the board in `board_calibration.json`, only where it differs from the defaults
+(see [Settings files](#settings-files)):
 
 | Field | Config key | Default | Meaning |
 |---|---|---|---|
 | S1 Park | `s1_ang` | −90 | Shoulder angle (°) at which the shoulder servo gets `s1_pw` (1500 µs) |
 | S1 Slope | `s1_slope` | −10 | µs per degree for the shoulder (negative = mounted reversed) |
 | S2 Park | `s2_ang` | 90 | Elbow angle (°) at `s2_pw` (1500 µs) |
-| S2 Slope | `s2_slope` | −10, or +10 with `"arms": "wooden"` | µs per degree for the elbow: negative with the elbow servo on the upper arm (3D-printed arms), positive with it on the lower arm (wooden arms); the default comes from `"arms"` in `customization.json` |
+| S2 Slope | `s2_slope` | −10 | µs per degree for the elbow: negative with the elbow servo on the upper arm (the 3D-printed arms), +10 with it on the lower arm (wooden arms, as in the original BrachioGraph): set it on the web page |
 | Pen Up / Pen Down | `pen_up`, `pen_down` | 1450 / 1850 | Pen servo pulse widths (µs) |
 | Speed | `speed` | 25 | Drawing speed in mm/s |
 | S1 / S2 Hysteresis | `s1_hyst`, `s2_hyst` | 0 | Backlash correction in µs (see below) |
@@ -460,8 +493,8 @@ A practical procedure:
 4. Set **Pen Up** so the pen clears the paper and **Pen Down** so it touches lightly.
 5. Draw the test square and fine-tune.
 
-`s1_pw` and `s2_pw` are also saved in `config.json` but are only editable in the script or by
-editing the file. If you paste values from a Raspberry Pi BrachioGraph, the mapping is
+`s1_pw` and `s2_pw` have no field on the page: change them in `board_default_calibration.json` (for
+every board) or with `CFG s1_pw=1520` (for one board, see [HTTP API](#http-api)). If you paste values from a Raspberry Pi BrachioGraph, the mapping is
 `servo_1_parked_pw → s1_pw`, `servo_1_degree_ms → s1_slope`,
 `servo_1_parked_angle → s1_ang`, `hysteresis_correction_1 → s1_hyst` (same for servo 2).
 
@@ -532,23 +565,45 @@ park pose stays the default, and the precise calibration below corrects either m
 Park and Slope describe each servo as a straight line through one point. Real servos, cheap ones
 especially, deviate from that line, more the further they turn from the middle: drawings then come
 out slightly distorted towards the edges. Section 8 of the page measures where each servo really
-is, on the BrachioGraph template ([images/template-grid.pdf](images/template-grid.pdf), the same
-file as [on brachiograph.art](https://www.brachiograph.art/_downloads/94e7b4ab642ebc644e516e616c26aaa3/template-grid.pdf)),
-and replaces Park and Slope by the measured points. It's an extra step: mount and calibrate as
-usual first.
+is, on a printed template, and replaces Park and Slope by the measured points. It's an extra step:
+mount and calibrate as usual first.
 
-The template (print it at 100 %, check the 1 cm squares with a ruler) is made for 80 mm arms. Its
-grid is in cm and uses the plotter's own coordinates: the shoulder pivot is at 0,0 (in the
-cut-out for the base), X to the right, Y away from the robot, seen from behind the robot.
+**The templates** (`images/template.py` draws them from the robot's geometry; print at 100 % and
+check the 10 cm bar on the sheet) are made for 80 mm arms. They use the plotter's own coordinates in
+cm: the shoulder axis is at 0,0, X to the robot's right (on the sheet: to the left, as the robot
+faces down the page), Y away from the robot. The robot is held by the two A4 filing holes: the
+shoulder axis is on the line through them, in the middle, 12 mm from the A4 sheet's edge (from
+`3d-prints/base.stl` and `a4-bracket.stl`). Both templates are A4 landscape sheets punched the same
+way with an office 2-hole punch, and both hang on the robot's two pins:
 
-- **Red lines** start at the shoulder pivot: shoulder angles from −150° to +30° (0° straight ahead,
-  −90° to the left).
-- **Blue lines** start at 0,8, where the elbow is when the shoulder is at 0° with an 80 mm upper
+| Template | Where it lies | For |
+|---|---|---|
+| [template-a4-front.pdf](images/template-a4-front.pdf) | In front of the robot, the robot at its top edge | Drawing, *Draw 1 cm Grid*, the elbow lines and the shoulder lines from −90° to +90° |
+| [template-a4-back.pdf](images/template-a4-back.pdf) | Behind the robot: printed like the front (holes at the top edge), then turned round and put on the same pins; the two sheets overlap by 24 mm at the pins. Its text is printed upside down, so it reads the right way once turned | The shoulder lines behind the robot (−90° to −180°, +90° to +180°), which the precise calibration needs down to −120° |
+
+**Checking the print:** the 10 cm bar must measure exactly 10 cm, and the printed hole circles must
+sit on the punched holes. Printers often shift the whole print by 1–3 mm (and lose a few mm at
+the bottom edge); a punch may also not hit exactly 12 mm from the edge. If the punched holes sit,
+say, 3 mm nearer the edge than the printed circles, draw a corrected pair:
+`python3 images/template.py --shift-y 3 --out ~/Downloads` (needs `pip install reportlab`).
+`images/template-a4-front-shift3mm.pdf` and `images/template-a4-back-shift3mm.pdf` are such a pair,
+3 mm towards the holes, tested with a laser printer and an office punch: try them first if the
+exact ones don't fit your printer.
+
+The original BrachioGraph template (`images/template-grid.pdf`, robot in a cut-out at the bottom of
+a portrait page) has the same lines and grid, for robots set up that way.
+
+- **Red lines** start at the shoulder axis: shoulder angles (0° straight ahead, i.e. down the page;
+  −90° to the robot's left, i.e. to the right on the page). The front sheet shows −90° to +90°,
+  the back sheet the rest.
+- **Blue lines** start at 0,8 cm, where the elbow is when the shoulder is at 0° with an 80 mm upper
   arm: elbow angles relative to the upper arm, from 15° to 165° (0° would continue straight on).
+- The green dashed rectangle is the default drawing area.
 
 **Steps:**
 
-1. Lay the robot on the template with the shoulder pivot exactly on 0,0. Tape both down.
+1. Put both templates on the robot's two pins (the back sheet turned round, behind the robot).
+   Tape them down.
 2. **Calibrate Shoulder:** the page names a red line (−120° to +15°, every 15°) and moves the
    shoulder there with the current calibration. Move it onto the line with the fine buttons
    (±1, ±5, ±20 µs; 1 µs is about 0.1°) until the line from the shoulder pivot through the elbow
@@ -582,7 +637,7 @@ measured instead of guessed. Twice the work.
 - *Delete Measured Points* goes back to Park and Slope for both joints. Changing Park or Slope has
   no effect on a joint with measured points.
 
-To return to the defaults, delete `config.json` from the board (Thonny's file view) and reset.
+To return to the defaults, delete `board_calibration.json` from the board (Thonny's file view) and reset.
 
 ---
 
@@ -720,7 +775,8 @@ All on port 80. Every response closes the connection.
 | Request | Response |
 |---|---|
 | `GET /` | The web page (`index.html` from flash) |
-| `GET /config` | Current settings as JSON |
+| `GET /config` | The calibration in effect (defaults and this board's changes) as JSON |
+| `GET /calibration` | This board's own `board_calibration.json` (only what differs from the defaults), for `flash.sh --get-calibration` |
 | `GET /status` | `{"rev": revision, "job": state, "line": n, "total": n, "s": deg, "e": deg, "p": 0/1}`; state is `idle`, `uploading`, `running`, `paused`, `parking` (plot ended, arm returning to park), `done`, `stopped` or `error` |
 | `POST /cmd` body = command | `OK S=<shoulder> E=<elbow> P=<0/1>` or `400 ERR <message>` |
 | `POST /job` body = G-code lines | Appends to the job being uploaded (max 8 KB per request) |
@@ -738,7 +794,7 @@ Commands for `POST /cmd`:
 | `G0 X<mm> Y<mm>` | Travel with pen up |
 | `G1 X<mm> Y<mm>` | Draw a straight line with pen down |
 | `ANG S=<deg> E=<deg> P=<0/1>` | Move joints directly to these angles |
-| `CFG <key>=<value> ...` | Set any settings by their config key (e.g. `CFG speed=20 s1_hyst=8`) and save to `config.json` |
+| `CFG <key>=<value> ...` | Set any settings by their config key (e.g. `CFG speed=20 s1_hyst=8`) and save to `board_calibration.json` |
 | `PW S=<us> E=<us>` | Precise calibration: move the shoulder (S) and/or elbow (E) servo to exact pulses (500–2500 µs), gliding, without hysteresis correction |
 | `CAL s1\|s2 <angle>:<us>,...` | Save the measured points of a joint (at least two; pulses must keep rising or falling with the angle); `CAL s1` alone deletes them |
 | `JOB_BEGIN <lines> <bytes>` | Start a new upload (checks free flash) |
@@ -778,13 +834,13 @@ In the script:
 
 | Constant | Default | Purpose |
 |---|---|---|
-| `PIN_SHOULDER`, `PIN_ELBOW`, `PIN_PEN` | 0, 1, 3 (C2/C3/C5/C6), 25, 26, 27 (classic), 4, 5, 6 (S2/S3) | Servo GPIOs; `"pins"` in `customization.json` overrides them |
+| `PIN_SHOULDER`, `PIN_ELBOW`, `PIN_PEN` | from `"pins"` in the settings: 0, 1, 3 (C2/C3/C5/C6), 25, 26, 27 (classic), 4, 5, 6 (S2/S3) | Servo GPIOs (see [Settings files](#settings-files)) |
 | `OLED_SDA`, `OLED_SCL`, `OLED_W`, `OLED_H` | 5, 6, 72, 40 | Display |
 | `PEN_SETTLE_MS` | 150 | Wait after pen up/down before moving |
 | `FRAME_MS` | 20 | Servo frame period (50 Hz); one motion step per frame |
 | `GLIDE_STEP_DEG` | 1.0 | Average joint step per frame for travel and jogs (≈50°/s), ramped up and down |
 | `MAX_CHUNK` | 8192 | Largest accepted upload chunk (bytes) |
-| `config` | see [Calibration](#calibration) | Defaults when there is no `config.json` (drawing speed is `speed` there) |
+| `config` | see [Calibration](#calibration) | The calibration in effect: `board_default_calibration.json`, then `board_calibration.json` |
 
 In the web page's script:
 
@@ -809,13 +865,15 @@ The drawing area is no longer a constant in the page: it comes from the board's 
 | Page shows "index.html is missing on the board" | Upload `index.html` to the board. |
 | Page looks outdated or buttons don't work after an update | Script and page are from different revisions; upload both from the same revision and reload the page. |
 | Wi-Fi connects but the page doesn't load | Most often Thonny stopped the program (OLED dot not blinking): reset the board with Thonny disconnected. Otherwise use `http://` explicitly and turn off mobile data. |
-| The board's access point doesn't show up at all, or joining your Wi-Fi fails now and then ("wrong password" with the right one) | The board can't transmit cleanly at high power: set `"txpower": 8.5` in `customization.json` (C3 boards already default to 13). |
+| The board's access point doesn't show up at all, or joining your Wi-Fi fails now and then ("wrong password" with the right one) | The board can't transmit cleanly at high power: set `"txpower": 8.5` in `board_settings.json` (C3 boards already default to 13). |
 | Page loads sometimes, connection unstable | Same cause: lower `"txpower"`. |
 | `flash.sh` says "MicroPython doesn't answer" on a board that has it | The program on it is stuck, or a terminal (Thonny) has the port: close it, unplug and replug the board, try again. `--firmware` reinstalls it (settings are saved first). |
 | OLED shows `NO SERVER` | Port 80 still held after a soft reboot: press RESET. |
 | OLED blank | Check the shell: `OLED HW I2C scan: []` means no display found (wiring/power). Any other error: re-upload the original `ssd1306.py`. |
 | Board resets or OLED glitches when servos move | Brownout: check the capacitor (polarity, firmly in the breadboard), use a stronger USB power supply, or power the servos separately. |
-| Board opens `ESP32-Plotter` instead of joining your Wi-Fi, `/log` says `customization.json invalid` | A typo in `customization.json` (it was uploaded without `flash.sh`, which checks it): fix it and flash by USB. |
+| Board opens `ESP32-Plotter` instead of joining your Wi-Fi, `/log` says `board_settings.json invalid` | A typo in `board_settings.json` (it was uploaded without `flash.sh`, which checks it): fix it and flash by USB. |
+| `/log` says `board_default_settings.json missing` or the plotter fails with `no servo pins` / `board_default_calibration.json missing` | The defaults files weren't uploaded (e.g. files copied by hand): run `./flash.sh`. The board still opens its access point and the rescue server meanwhile. |
+| `flash.sh`: "updates over Wi-Fi need ota_password" | Wi-Fi updates need the board's update password in your `board_settings.json` next to `flash.sh` (the board doesn't hand out its settings). |
 | Servo buzzes at rest | It's pushing against something or the pulse is at its limit; check calibration and mechanical range. |
 | Lines are curved instead of straight | Calibration slopes or park angles are off; recalibrate with the test square, or do the [precise calibration](#precise-calibration-optional). |
 | ⚠ warning under the drawing area fields | Part of the area is beyond the servos' limits or reach (see [Arms and drawing area](#arms-and-drawing-area)): *Auto-fit Area to Arms*, then *Apply Config*. |
@@ -840,12 +898,12 @@ The drawing area is no longer a constant in the page: it comes from the board's 
 | `rescue.py` | Wi-Fi, updates over Wi-Fi, event log and the rescue server |
 | `index.html` | Its web page |
 | `ssd1306.py` | OLED driver (MicroPython standard driver) |
-| `customization.defaults.json` | The defaults: name, access point, calibration; template for the optional `customization.json` |
 | `deploy_udev.sh` | Gives the logged-in user access to the ESP32's USB port, see [flash.sh](#flashsh) |
 | `flash.sh` | Installs and updates the board by USB or Wi-Fi, see [flash.sh](#flashsh) |
 | `requirements.txt` | The computer-side tools: esptool, mpremote, mpy-cross |
 | `README.md`, `PARTS.md` | Build guide and parts list |
-| `images/`, `3d-prints/` | Pictures for the README (drawn by `images/draw.py`), the BrachioGraph template `template-grid.pdf` for the precise calibration, example SVGs, and the printed parts |
+| `images/`, `3d-prints/` | Pictures for the README (drawn by `images/draw.py`), the templates `template-a4-front.pdf` and `template-a4-back.pdf` (and a pair shifted 3 mm for printers that print lower, `*-shift3mm.pdf`; drawn by `images/template.py`), the original BrachioGraph `template-grid.pdf`, example SVGs, and the printed parts |
+| `board_default_settings.json`, `board_default_calibration.json` | The defaults for the board settings and the calibration (see [Settings files](#settings-files)) |
 
 Revisions (up to 15 each in its own file in the original working folder; from 16 on in git):
 
@@ -867,4 +925,4 @@ Revisions (up to 15 each in its own file in the original working folder; from 16
 | 15 | Text section: up to 3 lines in Script, Block or Block bold Hershey single-stroke fonts, word wrap, largest-that-fits or fixed letter height, German umlauts; plot button renamed *Plot Drawing* |
 | 16 | Split into `main.py`, `plotter.py`, `rescue.py` (colleague's branch: joining a Wi-Fi via `customization.json`, updates over Wi-Fi with a rescue server, event log, classic ESP32 and other chips, park pose, view from the paper side, ramped glide, servos started one after another); installed as precompiled `.mpy` files (half the RAM); new `flash.sh`: finds the ESP32 by USB ID with a menu, keeps MicroPython and the calibration unless asked, any ESP32 with Wi-Fi, esptool 4 and 5, Wi-Fi updates only after checking it's the plotter and the password is right; `"arms"` setting for the elbow default; Wi-Fi errors shown on the OLED in words (wrong password, not found ...), alternating idle screen, connection-lost notice; the board's LED blinks as a heartbeat (fast while plotting, triple flash in rescue mode); "parking" state after a plot; display not retried when there is none; updates and restarts refused during a plot; board names with the MAC's last byte (`plotter-60`) for the hostname and the own access point; Wi-Fi transmit power setting (13 dBm default on C3: fixes boards whose access point was invisible); up to 3 Wi-Fi scans and no giving up on a momentary "wrong password"; `flash.sh` asks MicroPython before using esptool, frees boards left stuck by esptool's reset, never erases on `--yes` alone and saves the board's settings before erasing, remembers installed boards |
 | 17 | Optional precise calibration on the BrachioGraph template (section 8): measured points per joint replace Park/Slope, guided line by line with fine pulse buttons, optional approach from both sides that also measures the backlash for the hysteresis correction; *Draw 1 cm Grid* to check on the template; warning when the drawing area is beyond the servos' limits or reach; full Wi-Fi power on C3 boards with the OLED (13 dBm only without display); `flash.sh` asks before going on without `customization.json` (and no longer stops at the end without it), explains missing serial port permissions; SVG paths made of several pieces no longer get stray connecting lines; BrachioGraph template and example SVGs in `images/`; includes PR #3 (out-of-reach targets refused, one moving command at a time, classic ESP32 pins 25/26/27, new STLs) |
-| 18 | Works out of the box: the defaults, calibration included, in `customization.defaults.json`, overridden by an optional `customization.json` (a copy with your networks and update password filled in); 3D-printed arms, the view from the paper side and a drawing area the arms reach without hitting the servo limits (X −87…30, Y 45…128) are the defaults; `flash.sh` keeps the board's own settings unless you type *y* to replace them, asks once up front, runs without `sudo` (`deploy_udev.sh` gives access to the USB port without the group `dialout`) and names only `http://<name>.local` after flashing; wiring picture turned (ESP32 left, servos right, brown and orange jumpers to the servos) and photos for steps 6 and 8; 13 dBm transmit power on every C3 again (full power broke the Wi-Fi of a C3 OLED board) |
+| 18 | Robot on landscape A4 (PR #4: wiring picture, photos, STLs, 3D-printed arms and the view from the paper side as defaults, a drawing area within the servo limits, `deploy_udev.sh` instead of `sudo`, 13 dBm on every C3); settings in two files with the defaults in exactly one place each: `board_default_settings.json` / `board_settings.json` (name, Wi-Fi, passwords, hardware by chip; yours sent by `flash.sh`, otherwise the board keeps its own) and `board_default_calibration.json` / `board_calibration.json` (only on the board, only differences saved; `--get-calibration` copies it); `"arms"` replaced by the S2 Slope default; boards and local files of earlier versions converted automatically; `flash.sh` short by default with `--verbose`, one question per run, never uploads the calibration and saves it around a reinstall; templates for the new layout: two A4 sheets on the robot's pins, front and back (turned round, angles behind the shoulder), with a printer correction, drawn by `images/template.py` |

@@ -6,7 +6,8 @@ import time
 import json
 import os
 from machine import Pin, PWM, I2C, SoftI2C
-from rescue import custom, event, connect, wifi_watch, wifi_state, recv, read_request, handle_update, servo_pins, Led, chip, NAME
+from rescue import settings, setting, read_json, event, connect, wifi_watch, wifi_state, recv, read_request, \
+    handle_update, servo_pins, Led, chip, NAME, CAL_DEFAULTS_FILE, CAL_FILE
 
 REVISION = "REV 18.0"
 
@@ -14,11 +15,10 @@ REVISION = "REV 18.0"
 # The built-in framebuf font is fixed at 8x8 px, so 72x40 fits 9 chars x 5 rows.
 # Errors are printed (never silently swallowed) and the display is re-initialised
 # on the next update, which recovers it after a servo-induced brownout/I2C glitch.
-C3 = chip() == "ESP32C3"
 OLED_W, OLED_H = 72, 40
-# "oled": false in customization.json for a C3 board without a display: then nothing touches
-# the display pins and ssd1306.py isn't loaded. On by default on the C3 OLED board only.
-USE_OLED = custom.get("oled", C3)
+# "oled" in the settings (on by default on ESP32-C3 boards only); false for a C3 board without
+# a display: then nothing touches the display pins and ssd1306.py isn't loaded.
+USE_OLED = setting("oled")
 # The C3 board's OLED is on GPIO 5/6; on a classic ESP32 GPIO 6 is the flash clock
 OLED_SDA, OLED_SCL = (5, 6) if USE_OLED else (None, None)
 has_oled = False
@@ -119,25 +119,23 @@ init_oled()
 update_oled(REVISION, "BOOTING")
 
 # --- 2. Hardware Pin Assignments ---
+if not servo_pins():
+    raise OSError("no servo pins: board_default_settings.json missing or broken, run flash.sh")  # rescue mode
 PIN_SHOULDER, PIN_ELBOW, PIN_PEN = servo_pins()
 
 # --- 3. Calibration Configuration ---
-# "arms" in customization.json picks the elbow's default direction: "3d-printed" (elbow servo
-# on the upper arm, the printed arms: -10 us per degree) or "wooden" (servo on the lower arm, as
-# in the original BrachioGraph: +10). The calibration on the web page overrides it either way.
-ARMS = custom.get("arms", "3d-printed")
-if ARMS not in ("wooden", "3d-printed"):
-    event("customization.json: unknown \"arms\" %r, using \"3d-printed\"" % (ARMS,))
-    ARMS = "3d-printed"
-
-# Defaults from customization.defaults.json / customization.json. L1, L2: arm lengths (mm);
-# s*_hyst: hysteresis correction (us), see set_hardware; speed: mm/s; bed_*: drawing area (mm),
-# used by the web page; flip 1: drawings turned 180 deg for someone on the paper side, 0: from
-# behind; s*_table: precise calibration, [angle, pulse us] pairs replacing Park + Slope.
-config = {k: custom[k] for k in ("L1", "L2", "s1_pw", "s1_ang", "s1_slope", "s2_pw", "s2_ang",
-                                 "s1_hyst", "s2_hyst", "pen_up", "pen_down", "speed", "bed_minx",
-                                 "bed_maxx", "bed_miny", "bed_maxy", "flip", "s1_table", "s2_table")}
-config["s2_slope"] = custom.get("s2_slope", 10.0 if ARMS == "wooden" else -10.0)  # see ARMS
+# board_default_calibration.json (from git, uploaded with every update) holds the defaults, the
+# only place they are kept; board_calibration.json on the board (written by Apply Config and the
+# precise calibration, never uploaded by flash.sh) holds what differs from them.
+# L1, L2: arm lengths (mm); s1/s2: shoulder/elbow, park pulse, park angle, slope (us per deg,
+# s2_slope negative with the elbow servo on the upper arm as on the printed arms), hysteresis
+# correction (us, see set_hardware); pen_up/pen_down: pulses; speed: mm/s; bed_*: drawing area
+# (mm), used by the web page; flip 1: drawings turned 180 deg for someone on the paper side, 0:
+# from behind; s1_table/s2_table: precise calibration, [angle, pulse us] pairs replacing Park + Slope.
+cal_defaults = read_json(CAL_DEFAULTS_FILE)
+if not cal_defaults:
+    raise OSError(CAL_DEFAULTS_FILE + " missing or broken: run flash.sh")  # rescue mode, error in /log
+config = dict(cal_defaults)
 
 def check_table(table):
     # [[angle, pulse], ...] -> sorted list of float pairs, or ValueError
@@ -151,32 +149,25 @@ def check_table(table):
         raise ValueError("pulses must keep rising (or keep falling) with the angle")
     return t
 
-# Calibration survives reboots in config.json on the board's flash
-CONFIG_FILE = "config.json"
-
 def load_config():
-    try:
-        with open(CONFIG_FILE) as f:
-            saved = json.load(f)
-        for k in config:
-            if k in saved:
-                if isinstance(config[k], list):
-                    try:
-                        config[k] = check_table(saved[k])
-                    except (ValueError, TypeError) as e:
-                        print(CONFIG_FILE, k, "ignored:", repr(e))
-                else:
-                    config[k] = float(saved[k])
-        print("Config loaded from", CONFIG_FILE, config)
-    except OSError:
-        print("No", CONFIG_FILE, "yet - using defaults")
-    except Exception as e:
-        print(CONFIG_FILE, "unreadable - using defaults:", repr(e))
+    # The defaults, then what this board's calibration changes (checked: a broken value is
+    # ignored, not fatal)
+    saved = read_json(CAL_FILE) or {}
+    for k, v in saved.items():
+        if k not in config:
+            continue  # a setting from an older version
+        try:
+            config[k] = check_table(v) if isinstance(config[k], list) else float(v)
+        except (ValueError, TypeError) as e:
+            event("%s: %s ignored: %r" % (CAL_FILE, k, e))
+    print("Calibration:", config)
 
 def save_config():
-    with open(CONFIG_FILE, "w") as f:
-        json.dump(config, f)
-    print("Config saved to", CONFIG_FILE)
+    # Only what differs from the defaults, so later default changes still reach untouched values
+    mine = {k: v for k, v in config.items() if v != cal_defaults.get(k)}
+    with open(CAL_FILE, "w") as f:
+        json.dump(mine, f)
+    print("Calibration saved to", CAL_FILE, mine)
 
 load_config()
 
@@ -435,14 +426,14 @@ async def run_job():
     job["state"] = final
     update_oled(REVISION, job["state"].upper(), "%d/%d" % (job["line"], job["total"]))
 
-# --- 4. Wi-Fi: rescue.py (13 dBm on every C3, see TXPOWER there) ---
+# --- 4. Wi-Fi: rescue.py (transmit power from the settings, see TXPOWER there) ---
 import rescue
 
 IP = connect(lambda *lines: update_oled(*lines))
 
 def ready_screen():
     # The idle OLED: how to reach the board. On the fallback access point, two pages that
-    # alternate (oled_task): why the networks from customization.json failed, and the AP.
+    # alternate (oled_task): why the networks from the settings failed, and the AP.
     global ready_pages
     sta = network.WLAN(network.STA_IF)
     ip = sta.ifconfig()[0] if sta.isconnected() else IP  # may change after a rejoin
@@ -673,9 +664,14 @@ async def handle_client(reader, writer):
         elif await handle_update(req, reader, writer, length, auth):
             pass
         elif req.startswith("GET /config "):
-            # Lets the web UI show the saved calibration instead of hardcoded defaults
+            # The calibration in effect (defaults and this board's changes), for the web page
             writer.write(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n")
             writer.write(json.dumps(config).encode())
+        elif req.startswith("GET /calibration "):
+            # This board's own calibration file (only what differs from the defaults), for
+            # flash.sh --get-calibration
+            writer.write(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n")
+            writer.write(json.dumps(read_json(CAL_FILE) or {}).encode())
         elif req.startswith("GET /status "):
             # Polled by the web page while a job runs
             st = {"rev": REVISION, "name": NAME, "job": job["state"], "line": job["line"], "total": job["total"],
@@ -724,7 +720,7 @@ async def main():
         return
     print(REVISION, "Server Running on http://%s/" % IP)
     ready_screen()
-    if custom.get("networks"):
+    if settings.get("networks"):
         asyncio.create_task(wifi_watch(wifi_show))
     try:
         await oled_task()

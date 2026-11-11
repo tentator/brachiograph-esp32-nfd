@@ -29,19 +29,19 @@ The robot works without this step: it then opens its own Wi-Fi (see step 9).
 To have it join your Wi-Fi and to update it later without the USB cable:
 
 ```sh
-cp customization.defaults.json customization.json
+cp board_default_settings.json board_settings.json
 ```
 
-Open `customization.json` and change two lines:
+Open `board_settings.json` and change two lines:
 
 - `"networks": [],` becomes your Wi-Fi's name and password:
   `"networks": [{"ssid": "my-wifi", "password": "my-password"}],`
 - `"ota_password": "",` gets a password of your choice for updates over Wi-Fi:
   `"ota_password": "my-update-password",`
 
-Leave the rest as it is.
+Leave the rest as it is (you may delete the `"_about"` line).
 
-`customization.json` holds passwords and stays on your computer: Git never uploads it.
+`board_settings.json` holds passwords and stays on your computer: Git never uploads it.
 
 ## 3. Connect the ESP32
 
@@ -58,13 +58,16 @@ cable into the ESP32 and into the computer.
 
 It finds the ESP32 among the USB ports by itself (if several could be one, it
 asks which), puts MicroPython on it the first time, then copies the drawing
-program, the web page and your `customization.json`. It asks once before changing
-anything; answer `y`. If the ESP32 already has settings of its own, it asks
-before replacing them with your `customization.json`. If it says it has no access
-to the USB port, run `./deploy_udev.sh` once (it asks for your computer's
-password) and plug the ESP32 in again. Later, without the USB cable, `./flash.sh`
-updates the robot over Wi-Fi: it first checks that it really found your robot and
-that the password is right. `./flash.sh --help` shows the other options.
+program, the web page and your `board_settings.json`. It asks once before changing
+anything; answer `y`. It prints only a few lines; `./flash.sh --verbose` shows
+every step. If it says it has no access to the USB port, run `./deploy_udev.sh`
+once (it asks for your computer's password) and plug the ESP32 in again. Later,
+without the USB cable, `./flash.sh` updates the robot over Wi-Fi: it first checks
+that it really found your robot and that the password is right.
+`./flash.sh --help` shows the other options.
+
+The robot keeps its calibration (what you set on its web page in step 10) when
+you flash it again.
 
 ## 5. Build the robot
 
@@ -145,7 +148,7 @@ turn all the way without pulling on a cable.
 
 ## 9. Connect
 
-With your Wi-Fi in `customization.json`: put your laptop on the same Wi-Fi as
+With your Wi-Fi in `board_settings.json`: put your laptop on the same Wi-Fi as
 the robot, open a browser and go to `http://<name>.local` with the name that
 `flash.sh` printed at the end and that the display shows, for example
 `http://plotter-60.local`. Type the `http://` too.
@@ -158,8 +161,8 @@ and go to `http://192.168.4.1`. If Chrome on an Android phone shows
 The robot's page opens. The small display on the ESP32 helps: it shows the
 robot's address when it's ready, and says what went wrong if it couldn't join
 your Wi-Fi (for example *wrong password* or *not in range*). If you can't see
-the robot's own Wi-Fi at all, add `"txpower": 8.5`
-to `customization.json` and flash again: some boards can't send at full power. The blinking dot in the
+the robot's own Wi-Fi at all, set `"txpower": 8.5`
+in `board_settings.json` and flash again: some boards can't send well at high power. The blinking dot in the
 display's corner and the LED on the board blink while the robot program
 runs.
 
@@ -174,12 +177,20 @@ On the robot's page:
    and *Apply Config* again.
 
 Want even more precise drawings? At the bottom of the page, *Precise
-Calibration* measures the arms on the printed BrachioGraph template
-([images/template-grid.pdf](images/template-grid.pdf)),
-line by line, and *Draw 1 cm Grid* shows how exact the robot is. This is
-optional; [EXPERT.md](EXPERT.md#precise-calibration-optional) explains it.
+Calibration* measures the arms line by line on two printed A4 templates, one in
+front of the robot ([images/template-a4-front.pdf](images/template-a4-front.pdf))
+and one turned round behind it
+([images/template-a4-back.pdf](images/template-a4-back.pdf)), both on its two
+pins; *Draw 1 cm Grid* on the front one shows how exact the robot is. If the
+printed hole circles don't sit on the punched holes, try the `-shift3mm` versions. This is optional;
+[EXPERT.md](EXPERT.md#precise-calibration-optional) explains it.
 
 ## 11. Draw
+
+Punch two holes into an A4 sheet with an office hole punch, along one of its long
+edges. Lay it across (landscape) with the holes at the top and fit it onto the
+two pins of the A4 bracket, the robot at that edge: the sheet is then always in
+the same place.
 
 Pick a picture (SVG), a photo or a text, check the preview and press
 *Plot Drawing*. To start with, try the SVGs in [images/](images/): a hat, a

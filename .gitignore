@@ -5,3 +5,5 @@ backup/
 esptool
 mpremote
 boards.txt
+board_settings.json
+boards/

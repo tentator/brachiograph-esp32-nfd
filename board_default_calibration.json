@@ -1,0 +1,11 @@
+{
+  "L1": 80, "L2": 80,
+  "s1_pw": 1500, "s1_ang": -90, "s1_slope": -10,
+  "s2_pw": 1500, "s2_ang": 90, "s2_slope": -10,
+  "s1_hyst": 0, "s2_hyst": 0,
+  "pen_up": 1450, "pen_down": 1850,
+  "speed": 25,
+  "bed_minx": -87, "bed_maxx": 30, "bed_miny": 45, "bed_maxy": 128,
+  "flip": 1,
+  "s1_table": [], "s2_table": []
+}

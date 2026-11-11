@@ -2,128 +2,149 @@
 # Put the plotter on an ESP32, by USB or over Wi-Fi. ./flash.sh --help for the options.
 #
 # By USB: finds the ESP32 among the serial ports, installs MicroPython only if it's missing
-# (or with --firmware), and copies the plotter's files. Your calibration (config.json) stays.
-# Over Wi-Fi (no ESP32 on USB, --wifi or a host name): finds the plotter, checks the update
-# password and uploads the files. Needs "ota_password" in customization.json.
+# (or with --firmware), and copies the plotter's files. Over Wi-Fi (no ESP32 on USB, --wifi or a
+# host name): finds the plotter, checks the update password and uploads the files.
+#
+# Settings: board_default_settings.json (defaults, in git) always goes to the board;
+# board_settings.json (yours, next to this script, not in git) too when it exists, otherwise the
+# board keeps its own. The calibration (board_calibration.json, set on the web page) stays on the
+# board: never uploaded, saved and put back around a reinstall, --get-calibration fetches a copy.
 set -euo pipefail
 cd "$(dirname "$0")"
 
 MP_VERSION=v1.29.0          # MicroPython installed on new boards
 MP_DATE=20260824            # its build date, part of the firmware file name
 COMPILED="rescue plotter ssd1306"   # precompiled to .mpy when possible: less RAM on the board
+DEF_SETTINGS=board_default_settings.json DEF_CAL=board_default_calibration.json
+SETTINGS=board_settings.json CAL=board_calibration.json
 # main.py goes last: it starts everything else, so a cut-off update can't start half the files
-RAW="index.html customization.defaults.json"
+RAW="index.html $DEF_SETTINGS $DEF_CAL"
 
 usage() {
   cat <<EOF
 Usage: ./flash.sh [options] [port | host]
 
   port         serial port of the ESP32: /dev/ttyACM0, ttyUSB0, ACM0 ... (default: found by itself)
-  host         update over Wi-Fi at this address, e.g. plotter.local or 192.168.4.1
+  host         update over Wi-Fi at this address, e.g. plotter-60.local or 192.168.4.1
 
   -l, --list   show the ESP32s found on USB and Wi-Fi, change nothing
-  --firmware   (re)install MicroPython by USB; erases the flash, config.json is kept
+  --get-calibration
+               copy the board's calibration to boards/<name>-calibration.json, change nothing
+  --firmware   (re)install MicroPython by USB; erases the board, its settings are put back
   --fw FILE    MicroPython firmware file to install (default: downloaded for the chip found)
   --wifi       update over Wi-Fi even if an ESP32 is plugged in
   --py         upload .py sources instead of precompiled .mpy files
-  -y, --yes    don't ask before erasing or uploading (keeps the board's own settings)
+  -y, --yes    don't ask (a board without MicroPython is still only erased with --firmware)
+  -v, --verbose
+               show every step and the tools' output
   -h, --help   this help
 EOF
 }
 
-die() { echo "flash.sh: $*" >&2; exit 1; }
-say() { echo "==> $*"; }
-YES=0 GO=0
-ask() {
-  [[ $YES == 1 || $GO == 1 ]] && return 0
-  [[ -t 0 ]] || die "$1 Run with --yes to go ahead without asking."
-  local a; read -r -p "$1 [y/N] " a; [[ $a == [yYjJ]* ]]
-}
-
-LIST=0 FIRMWARE=0 FW_FILE= WIFI=0 PY=0 TARGET=
+VERBOSE=0 YES=0 LIST=0 GETCAL=0 FIRMWARE=0 FW_FILE= WIFI=0 PY=0 TARGET=
 while (( $# )); do
   case $1 in
     -l|--list) LIST=1 ;;
+    --get-calibration) GETCAL=1 ;;
     --firmware) FIRMWARE=1 ;;
     --fw) FW_FILE=${2:?--fw needs a file}; FIRMWARE=1; shift ;;
     --wifi) WIFI=1 ;;
     --py) PY=1 ;;
     -y|--yes) YES=1 ;;
+    -v|--verbose) VERBOSE=1 ;;
     -h|--help) usage; exit 0 ;;
-    -*) usage >&2; die "unknown option $1" ;;
-    *) [[ -z $TARGET ]] || die "only one port or host, got '$TARGET' and '$1'"; TARGET=$1 ;;
+    -*) usage >&2; echo "flash.sh: unknown option $1" >&2; exit 1 ;;
+    *) [[ -z $TARGET ]] || { echo "flash.sh: only one port or host, got '$TARGET' and '$1'" >&2; exit 1; }; TARGET=$1 ;;
   esac
   shift
 done
-[[ -z $FW_FILE || -f $FW_FILE ]] || die "firmware file $FW_FILE not found"
 
-# ---------- customization.defaults.json, overridden by customization.json (optional) ----------
-custom() { python3 -c "import json, os, sys
-c = json.load(open('customization.defaults.json'))
-if os.path.exists('customization.json'):
-    c.update(json.load(open('customization.json')))
-print(c.get(sys.argv[1], ''))" "$1"; }
-if [[ -f customization.json ]]; then
+# ---------- output ----------
+die() { echo "flash.sh: $*" >&2; exit 1; }
+say() { echo "$*"; }                              # always shown: what happens
+detail() { [[ $VERBOSE == 0 ]] || echo "  $*"; }  # --verbose only
+TOOLLOG=$(mktemp); BUILD=$(mktemp -d); trap 'rm -rf "$TOOLLOG" "$BUILD"' EXIT
+run() {
+  # run <what> <command...>: the command's output only with --verbose; on failure its last lines
+  local what=$1; shift
+  if [[ $VERBOSE == 1 ]]; then
+    "$@" || die "$what failed"
+  elif ! "$@" >"$TOOLLOG" 2>&1; then
+    tail -n 25 "$TOOLLOG" >&2
+    die "$what failed (output above; --verbose shows everything)"
+  fi
+}
+ask() {
+  [[ $YES == 1 ]] && return 0
+  [[ -t 0 ]] || die "$1 Run with --yes to go ahead without asking."
+  local a; read -r -p "$1 [y/N] " a; [[ $a == [yYjJ]* ]]
+}
+[[ -z $FW_FILE || -f $FW_FILE ]] || die "firmware file $FW_FILE not found"
+[[ -f $DEF_SETTINGS && -f $DEF_CAL ]] || die "$DEF_SETTINGS or $DEF_CAL missing: run flash.sh from the repository"
+
+# ---------- settings ----------
+# A customization.json from REV 17 or earlier becomes board_settings.json (the old file stays)
+if [[ -f customization.json && ! -f $SETTINGS && $LIST == 0 ]]; then
+  python3 - <<'PY' || die "customization.json is not valid JSON: fix it or remove it"
+import json
+old = json.load(open("customization.json"))
+cal = json.load(open("board_default_calibration.json"))
+json.dump({k: v for k, v in old.items() if k not in cal and k != "arms"}, open("board_settings.json", "w"), indent=2)
+PY
+  say "Copied your customization.json to $SETTINGS (the new name); you can delete customization.json."
+fi
+setting() {  # the value of a board setting: board_settings.json if there, else the default
+  python3 -c "import json, os, sys
+s = json.load(open('$DEF_SETTINGS'))
+if os.path.exists('$SETTINGS'):
+    s.update(json.load(open('$SETTINGS')))
+v = s.get(sys.argv[1], '')
+print(json.dumps(v) if isinstance(v, (list, dict)) else v)" "$1"
+}
+if [[ -f $SETTINGS ]]; then
   # Mistakes the board can't fix by itself: it would start without your Wi-Fi or with the wrong pins
-  python3 - <<'PY' || die "fix customization.json first (see customization.defaults.json)"
+  python3 - "$DEF_SETTINGS" "$SETTINGS" "$DEF_CAL" <<'PY' || die "fix $SETTINGS first (see $DEF_SETTINGS)"
 import json, sys
-d = json.load(open("customization.defaults.json"))
+d = json.load(open(sys.argv[1])); cal = json.load(open(sys.argv[3]))
 try:
-    c = dict(d, **json.load(open("customization.json")))
+    own = json.load(open(sys.argv[2]))
 except ValueError as e:
-    sys.exit("customization.json is not valid JSON: %s" % e)
-errors = ["networks entry %d needs \"ssid\" and \"password\"" % (i + 1)
-          for i, n in enumerate(c.get("networks", [])) if not {"ssid", "password"} <= set(n)]
-if "ap" in c and not 8 <= len(c["ap"].get("password", "plotterpassword")) <= 63:
+    sys.exit("%s is not valid JSON: %s" % (sys.argv[2], e))
+c = dict(d, **own)
+num = lambda v: isinstance(v, (int, float)) and not isinstance(v, bool)
+def chipmap(v, ok):  # a value, or a map {"*": value, "ESP32C3": value, ...}
+    return all(ok(x) for x in v.values()) if isinstance(v, dict) and "*" in v else ok(v)
+errors, notes = [], []
+errors += ["networks entry %d needs \"ssid\" and \"password\"" % (i + 1)
+           for i, n in enumerate(c.get("networks", [])) if not {"ssid", "password"} <= set(n)]
+if not 8 <= len((c.get("ap") or {}).get("password", "plotterpassword")) <= 63:
     errors.append("the \"ap\" password needs 8 to 63 characters")
-if c.get("arms", "3d-printed") not in ("wooden", "3d-printed"):
-    errors.append("\"arms\" must be \"wooden\" or \"3d-printed\"")
-if "oled" in c and not isinstance(c["oled"], bool):
-    errors.append("\"oled\" must be true or false")
-led = c.get("led")
-if led not in (None, False) and not (isinstance(led, dict) and isinstance(led.get("pin"), int)):
-    errors.append("\"led\" must be false or like {\"pin\": 8, \"active_low\": true}")
-if not all(isinstance(v, int) for v in c.get("pins", {}).values()):
-    errors.append("\"pins\" values must be GPIO numbers")
-if "txpower" in c and not (isinstance(c["txpower"], (int, float)) and 2 <= c["txpower"] <= 20):
-    errors.append("\"txpower\" must be a number of dBm from 2 to 20 (e.g. 8.5)")
-if "mac_suffix" in c and not isinstance(c["mac_suffix"], bool):
+if not isinstance(c.get("mac_suffix", True), bool):
     errors.append("\"mac_suffix\" must be true or false")
-errors += ["\"%s\" must be a number" % k for k, v in d.items()
-           if type(v) is int and not (isinstance(c[k], (int, float)) and not isinstance(c[k], bool))]
+if not chipmap(c.get("oled", False), lambda v: isinstance(v, bool)):
+    errors.append("\"oled\" must be true or false")
+if not chipmap(c.get("led", False), lambda v: v is False or (isinstance(v, dict) and isinstance(v.get("pin"), int))):
+    errors.append("\"led\" must be false or like {\"pin\": 8, \"active_low\": true}")
+if not chipmap(c.get("txpower"), lambda v: v is None or (num(v) and 2 <= v <= 20)):
+    errors.append("\"txpower\" must be a number of dBm from 2 to 20 (e.g. 8.5), or null for full power")
+if not chipmap(own.get("pins", {}), lambda v: isinstance(v, dict) and all(isinstance(p, int) for p in v.values())):
+    errors.append("\"pins\" must be like {\"shoulder\": 4} (GPIO numbers)")
+for k in own:
+    if k == "arms":
+        notes.append("\"arms\" is no longer used: the elbow direction is S2 Slope on the web page (default -10, +10 for wooden arms)")
+    elif k in cal:
+        notes.append("\"%s\" is part of the calibration (set on the web page), not a board setting: ignored" % k)
+    elif k not in d and not k.startswith("_"):
+        notes.append("\"%s\" is not a board setting: ignored" % k)
+for n in notes:
+    print("%s: note: %s" % (sys.argv[2], n), file=sys.stderr)
 for e in errors:
-    print("customization.json:", e, file=sys.stderr)
+    print("%s: %s" % (sys.argv[2], e), file=sys.stderr)
 sys.exit(1 if errors else 0)
 PY
+  FILES_EXTRA=$SETTINGS
 else
-  echo "No customization.json here. The board keeps the one it already has, if any; without one it"
-  echo "opens its own Wi-Fi 'ESP32-Plotter-<xx>' (password plotterpassword) and can't be updated over Wi-Fi."
-  echo "To set your Wi-Fi: cp customization.defaults.json customization.json and fill it in."
-fi
-
-# The local customization.json replaces the board's own settings (customization.json, config.json)
-# only when typed y; then config.json goes too, so the calibration starts from the defaults again
-settings() {  # $1: the board's file list; sets FILES_EXTRA and OVERWRITE
-  FILES_EXTRA= OVERWRITE=0
-  [[ -f customization.json ]] || return 0
-  local own a; own=$(grep -owE 'customization\.json|config\.json' <<<"$1" | sort -u | xargs || true)
-  if [[ -n $own ]]; then
-    echo "The ESP32 has its own settings: $own."
-    if [[ $YES == 1 || ! -t 0 ]]; then echo "Keeping them (answer y without --yes to replace them)."; return 0; fi
-    read -r -p "Replace them with your customization.json? The board's calibration is lost. [y/N] " a
-    [[ $a == [yYjJ]* ]] || { echo "Keeping the board's settings."; return 0; }
-    OVERWRITE=1
-  fi
-  FILES_EXTRA=customization.json
-}
-
-# One question up front, then no more: a board without MicroPython (new or stuck) gets it, which
-# erases it; that's never done on --yes alone
-if [[ $LIST == 0 && $YES == 0 ]]; then
-  echo "This puts the plotter on your ESP32: by USB, or over Wi-Fi if none is plugged in."
-  echo "A board without MicroPython (new, or its program stuck) gets it installed: that ERASES the board."
-  ask "Go ahead?" || die "nothing changed"
-  GO=1
+  FILES_EXTRA=
 fi
 REV=$(grep -oE '^REVISION = "[^"]+"' plotter.py | cut -d'"' -f2)
 
@@ -148,8 +169,7 @@ esp() {
 }
 
 # ---------- finding the ESP32 on USB ----------
-# USB IDs of the usual ESP32 USB connections
-describe() {  # vendor:product -> what it is, empty if it isn't a usual ESP32 adapter
+describe() {  # USB vendor:product -> what it is, empty if it isn't a usual ESP32 adapter
   case $1 in
     303a:*) echo "Espressif built-in USB (ESP32-C3/S3/C6 ...)" ;;
     10c4:ea60) echo "CP210x USB-serial (ESP32 DevKit)" ;;
@@ -174,7 +194,7 @@ scan_usb() {
     d=$(describe "${id:-}")
     if [[ -n $d ]]; then PORTS+=("$dev"); DESCS+=("$d")
     elif [[ -z $id ]]; then PORTS+=("$dev"); DESCS+=("unknown USB device")  # no udev: can't tell
-    else echo "    (skipping $dev: USB $id is not a usual ESP32 adapter)"
+    else detail "skipping $dev: USB $id is not a usual ESP32 adapter"
     fi
   done
 }
@@ -188,8 +208,8 @@ pick_port() {  # sets PORT from TARGET or the ports found; asks if there are sev
     0) PORT= ;;
     1) PORT=${PORTS[0]} ;;
     *)
-      echo "Several possible ESP32s on USB:"
-      local i; for i in "${!PORTS[@]}"; do echo "  $((i + 1))) ${PORTS[$i]}  ${DESCS[$i]}"; done
+      say "Several possible ESP32s on USB:"
+      local i; for i in "${!PORTS[@]}"; do say "  $((i + 1))) ${PORTS[$i]}  ${DESCS[$i]}"; done
       [[ -t 0 && $YES == 0 ]] || die "pick one: ./flash.sh <port>"
       read -r -p "Which one? [1-${#PORTS[@]}] " i
       [[ $i =~ ^[0-9]+$ ]] && (( i >= 1 && i <= ${#PORTS[@]} )) || die "no such choice"
@@ -215,26 +235,24 @@ probe() {  # host -> "plotter <rev> <job> <name>", "rescue" or nothing; checks i
 wifi_candidates() {
   if [[ -n $TARGET ]]; then echo "$TARGET"; return; fi
   [[ -f $BOARDS ]] && sed 's/$/.local/' "$BOARDS"   # boards installed from here
-  local hn; hn=$(custom hostname)
+  local hn; hn=$(setting hostname)
   echo "${hn:-plotter}.local"   # a board without the MAC suffix ("mac_suffix": false)
   echo 192.168.4.1   # the board's own access point
 }
 
 if [[ $LIST == 1 ]]; then
-  say "USB:"; scan_usb
-  if (( ${#PORTS[@]} )); then for i in "${!PORTS[@]}"; do echo "    ${PORTS[$i]}  ${DESCS[$i]}"; done; else echo "    no ESP32 found"; fi
-  say "Wi-Fi:"
-  for h in $(wifi_candidates); do r=$(probe "$h"); echo "    $h: ${r:-no plotter answers}"; done
-  [[ -f $BOARDS ]] && echo "    (boards installed from here: $(xargs < "$BOARDS"))"
+  echo "USB:"; VERBOSE=1 scan_usb
+  if (( ${#PORTS[@]} )); then for i in "${!PORTS[@]}"; do echo "  ${PORTS[$i]}  ${DESCS[$i]}"; done; else echo "  no ESP32 found"; fi
+  echo "Wi-Fi:"
+  for h in $(wifi_candidates); do r=$(probe "$h"); echo "  $h: ${r:-no plotter answers}"; done
+  [[ -f $BOARDS ]] && echo "  (boards installed from here: $(xargs < "$BOARDS"))"
   exit 0
 fi
 
 # ---------- the files to upload ----------
-BUILD=$(mktemp -d); trap 'rm -rf "$BUILD"' EXIT
 prepare() {  # uses MP_BOARD_VERSION (e.g. "1.29.0", empty if unknown); sets UPLOAD and STALE
   local m want have
   UPLOAD=() STALE=()
-  [[ $OVERWRITE == 0 ]] || STALE+=(config.json)
   want=${MP_BOARD_VERSION:-}
   have=$([[ -n $MPYCROSS ]] && $MPYCROSS --version 2>/dev/null | grep -oE 'v[0-9]+\.[0-9]+' | head -1 | tr -d v || true)
   if [[ $PY == 0 && -n $MPYCROSS && -n $want && ${want%.*} == "$have" ]]; then
@@ -242,18 +260,22 @@ prepare() {  # uses MP_BOARD_VERSION (e.g. "1.29.0", empty if unknown); sets UPL
       $MPYCROSS -o "$BUILD/$m.mpy" "$m.py" || die "mpy-cross failed on $m.py"
       UPLOAD+=("$BUILD/$m.mpy"); STALE+=("$m.py")
     done
-    echo "Precompiled $COMPILED to .mpy for MicroPython $want (less RAM on the board)."
+    detail "precompiled $COMPILED to .mpy for MicroPython $want"
   else
     for m in $COMPILED; do UPLOAD+=("$m.py"); STALE+=("$m.mpy"); done
     if [[ $PY == 0 && -z $MPYCROSS ]]; then
-      echo "Uploading .py sources (no mpy-cross installed: pip install --user -r requirements.txt)."
+      say "Note: no mpy-cross installed (pip install --user -r requirements.txt): uploading .py sources, which need much more RAM on the board."
     elif [[ $PY == 0 ]]; then
-      echo "Uploading .py sources (mpy-cross $have, MicroPython ${want:-unknown} on the board)."
+      say "Note: mpy-cross $have doesn't match MicroPython ${want:-unknown} on the board: uploading .py sources, which need much more RAM."
     fi
-    [[ $PY == 1 ]] || echo "  Sources need much more RAM on the board than .mpy files; if it fails to start, fix this first."
   fi
   for m in $RAW $FILES_EXTRA; do UPLOAD+=("$m"); done
   UPLOAD+=(main.py)
+}
+settings_note() {
+  if [[ -n $FILES_EXTRA ]]; then detail "your $SETTINGS goes to the board"
+  else say "No $SETTINGS here: the board keeps its own settings (a new board starts with the defaults)."
+  fi
 }
 
 # ---------- by USB ----------
@@ -272,14 +294,26 @@ for _ in range(20):
 PY
 }
 identify() {  # esptool chip-id: sets variant ("C3", "S3", "" for a classic ESP32) and mac
-  info=$(esp chip-id --port "$PORT" 2>&1) || { echo "$info" | tail -5 >&2; release; die "the ESP32 on $PORT does not answer (hold BOOT while plugging it in, then try again)"; }
+  local out
+  out=$(esp chip-id --port "$PORT" 2>&1) || { echo "$out" | tail -5 >&2; release; die "the ESP32 on $PORT does not answer (hold BOOT while plugging it in, then try again)"; }
   release
   # esptool names the chip (ESP32-C3, ESP32-S3 ...); a classic ESP32 shows its package (ESP32-D0WD-V3)
-  model=$(grep -oE 'ESP32-[CSHP][0-9]+' <<<"$info" | head -1 || true)
+  model=$(grep -oE 'ESP32-[CSHP][0-9]+' <<<"$out" | head -1 || true)
   variant=${model#ESP32-}
-  mac=$(grep -oiE 'MAC: *([0-9a-f]{2}:){5}[0-9a-f]{2}' <<<"$info" | head -1 | grep -oiE '[0-9a-f]{2}$' | tr 'A-F' 'a-f' || true)
-  echo "esptool: ${model:-a classic ESP32}"
+  model=${model:-ESP32}
+  mac=$(grep -oiE 'MAC: *([0-9a-f]{2}:){5}[0-9a-f]{2}' <<<"$out" | head -1 | grep -oiE '[0-9a-f]{2}$' | tr 'A-F' 'a-f' || true)
+  detail "esptool: $model, MAC ...:$mac"
 }
+# Asked of MicroPython: version, chip, MAC byte, and the board's hostname and mac_suffix
+QUERY="import os, machine, json
+u = os.uname()
+s = {}
+for n in ('board_default_settings.json', 'customization.json', 'board_settings.json'):
+    try:
+        s.update(json.load(open(n)))
+    except Exception:
+        pass
+print('MP', u.release, u.machine.split()[-1].replace('-', ''), '%02x' % machine.unique_id()[-1], s.get('hostname', '-'), s.get('mac_suffix', True))"
 usb_flash() {
   need "$ESPTOOL" esptool; need "$MPREMOTE" mpremote
   if [[ ! -r $PORT || ! -w $PORT ]]; then
@@ -292,129 +326,133 @@ usb_flash() {
   # Talking to MicroPython over USB stops the running plotter (as Thonny does): restart the
   # board if we end up changing nothing
   abort() { timeout 20 $MPREMOTE connect "$PORT" reset >/dev/null 2>&1 || true; die "$1"; }
-  say "Checking the ESP32 on $PORT"
-  local info model variant chip fw offset mac name board_hn board_sfx files=
-  # Ask MicroPython first: its version, chip, MAC and the board's own customization.json.
-  # (esptool resets the chip in a way that leaves MicroPython unreachable over native USB,
-  # so it's only used when MicroPython doesn't answer or is to be installed.)
-  local try
+  local info model= variant= chip fw offset mac= name board_hn=- board_sfx=True files= try
+  # Ask MicroPython first (esptool resets the chip in a way that leaves MicroPython unreachable
+  # over native USB, so it's only used when MicroPython doesn't answer or is to be installed)
   for try in 1 2; do
     release  # in case an earlier esptool or terminal left the chip held in reset
-    info=$(timeout 25 $MPREMOTE connect "$PORT" exec "import os, machine, json
-u = os.uname()
-try:
-    c = json.load(open('customization.json'))
-except Exception:
-    c = {}
-print('MP', u.release, u.machine.split()[-1].replace('-', ''), '%02x' % machine.unique_id()[-1], c.get('hostname', '-'), c.get('mac_suffix', True))" 2>/dev/null | tr -d '\r' | grep '^MP ' || true)
+    info=$(timeout 25 $MPREMOTE connect "$PORT" exec "$QUERY" 2>/dev/null | tr -d '\r' | grep '^MP ' || true)
     [[ -n $info ]] && break
   done
   if [[ -n $info ]]; then
     read -r _ MP_BOARD_VERSION model mac board_hn board_sfx <<<"$info"
     variant=${model#ESP32}
-    echo "MicroPython $MP_BOARD_VERSION is on it (${model}). Files:"
-    files=$(timeout 20 $MPREMOTE connect "$PORT" fs ls 2>/dev/null || true)
-    sed 's/^/    /' <<<"$files"
+    if [[ $VERBOSE == 1 ]]; then
+      files=$(timeout 20 $MPREMOTE connect "$PORT" fs ls 2>/dev/null || true)
+      detail "MicroPython $MP_BOARD_VERSION, files on the board:"; sed 's/^/    /' <<<"$files"
+    fi
   else
     MP_BOARD_VERSION=
-    echo "MicroPython doesn't answer on $PORT (a new board, or one whose program is stuck)."
     identify
     if [[ $FIRMWARE != 1 ]]; then
       # Erasing a board that may well have MicroPython and settings on it: never just on --yes
-      [[ $GO == 1 ]] || die "run ./flash.sh --firmware to install MicroPython on it (this erases the board)"
+      [[ -t 0 ]] || die "MicroPython doesn't answer on $PORT: run ./flash.sh --firmware to install it (this erases the board)"
+      say "MicroPython doesn't answer on $PORT: a new board, or one whose program is stuck."
+      local a; read -r -p "Install MicroPython and the plotter $REV? This ERASES the board. [y/N] " a
+      [[ $a == [yYjJ]* ]] || die "nothing changed"
       FIRMWARE=1 CONFIRMED=1
     fi
   fi
   case $variant in H*|P*) die "ESP32-$variant has no Wi-Fi of its own; the plotter needs Wi-Fi" ;; esac
-  settings "$files"
   chip=esp32$(tr 'A-Z' 'a-z' <<<"$variant")
-  # Its name: hostname plus "-" and the MAC's last byte, as the board computes it (see rescue.py).
-  # The hostname comes from the customization.json that will be on the board.
-  if [[ -f customization.json ]]; then board_hn=$(custom hostname); board_sfx=$(custom mac_suffix); fi
-  [[ $board_hn == - || -z $board_hn ]] && board_hn=plotter
-  name=$board_hn
+  # Its name: hostname plus "-" and the MAC's last byte, as the board computes it (see rescue.py),
+  # from the settings it will have: yours if there are any here, else its own, else the defaults
+  if [[ -f $SETTINGS || $board_hn == - ]]; then board_hn=$(setting hostname); board_sfx=$(setting mac_suffix); fi
+  name=${board_hn:-plotter}
   [[ $board_sfx == False || -z $mac ]] || name=$name-$mac
-  echo "It will be called '$name'."
+  say "Found $name (${model:-ESP32}) on $PORT."
+
+  if [[ $GETCAL == 1 ]]; then
+    mkdir -p boards
+    if timeout 20 $MPREMOTE connect "$PORT" fs cp ":$CAL" "boards/$name-calibration.json" >/dev/null 2>&1; then
+      say "Calibration saved to boards/$name-calibration.json."
+    else
+      say "$name has no calibration of its own yet (it uses the defaults)."
+    fi
+    timeout 20 $MPREMOTE connect "$PORT" reset >/dev/null 2>&1 || true
+    return
+  fi
+  settings_note
 
   if [[ $FIRMWARE == 1 ]]; then
     fw=${FW_FILE:-firmware/ESP32_GENERIC${variant:+_$variant}-$MP_DATE-$MP_VERSION.bin}
     case $variant in ""|S2) offset=0x1000 ;; C5) offset=0x2000 ;; *) offset=0x0 ;; esac  # where the bootloader goes
+    [[ ${CONFIRMED:-0} == 1 ]] || \
+      ask "Reinstall MicroPython and the plotter $REV on $name? This erases the board (its settings are saved and put back)." \
+      || abort "nothing changed"
     if [[ ! -f $fw ]]; then
       mkdir -p firmware
-      say "Downloading $(basename "$fw")"
-      curl -fL -o "$fw.part" "https://micropython.org/resources/firmware/$(basename "$fw")" && mv "$fw.part" "$fw" \
+      say "Downloading $(basename "$fw") ..."
+      curl -fsL -o "$fw.part" "https://micropython.org/resources/firmware/$(basename "$fw")" && mv "$fw.part" "$fw" \
         || { rm -f "$fw.part"; die "no MicroPython $MP_VERSION for ${model:-ESP32} at micropython.org; download one and use --fw FILE"; }
     fi
-    [[ ${CONFIRMED:-0} == 1 ]] || \
-      ask "Install MicroPython ($(basename "$fw")) on $PORT? This ERASES the whole flash (the board's settings are saved and put back)." \
-      || abort "nothing changed"
-    # Save the board's settings first, unless they are to be replaced
+    # Save the board's own files first (the calibration, its settings if none here, and the
+    # files of earlier versions, which the board converts at the next start)
     local f keep=() stamp; stamp=$(date +%Y%m%d-%H%M%S)
     if [[ -n $MP_BOARD_VERSION ]]; then
-      for f in config.json customization.json; do
-        [[ $OVERWRITE == 1 ]] && break
-        if timeout 20 $MPREMOTE connect "$PORT" fs ls ":$f" >/dev/null 2>&1; then
-          mkdir -p backup
-          timeout 20 $MPREMOTE connect "$PORT" fs cp ":$f" "backup/${f%.json}-$stamp.json" >/dev/null \
-            && keep+=("backup/${f%.json}-$stamp.json") && echo "Saved the board's $f to backup/${f%.json}-$stamp.json"
+      for f in $CAL $SETTINGS config.json customization.json; do
+        [[ $f == "$SETTINGS" && -n $FILES_EXTRA ]] && continue
+        mkdir -p backup
+        if timeout 20 $MPREMOTE connect "$PORT" fs cp ":$f" "backup/$name-$stamp-$f" >/dev/null 2>&1; then
+          keep+=("backup/$name-$stamp-$f"); detail "saved the board's $f to backup/$name-$stamp-$f"
         fi
       done
+      (( ${#keep[@]} )) && say "Saved the board's settings to backup/ (put back after the install)."
     fi
-    esp erase-flash --chip "$chip" --port "$PORT"
-    esp write-flash --chip "$chip" --port "$PORT" --baud 460800 -- "$offset" "$fw"
+    say "Installing MicroPython (about a minute) ..."
+    run "erasing the board" esp erase-flash --chip "$chip" --port "$PORT"
+    run "writing MicroPython" esp write-flash --chip "$chip" --port "$PORT" --baud 460800 -- "$offset" "$fw"
     release
-    say "Waiting for MicroPython's first start"
     for try in $(seq 1 15); do
       MP_BOARD_VERSION=$(timeout 10 $MPREMOTE connect "$PORT" exec "import os; print(os.uname().release)" 2>/dev/null | tr -d '\r' | tail -1 || true)
       [[ $MP_BOARD_VERSION =~ ^[0-9]+\.[0-9]+ ]] && break
       MP_BOARD_VERSION=; sleep 2
     done
-    [[ -n $MP_BOARD_VERSION ]] || die "MicroPython does not answer on $PORT after flashing"
+    [[ -n $MP_BOARD_VERSION ]] || die "MicroPython does not answer on $PORT after the install"
     (( ${#keep[@]} )) && FILES_EXTRA="$FILES_EXTRA ${keep[*]}"
+  else
+    ask "Copy the plotter $REV to $name?" || abort "nothing changed"
   fi
 
   prepare
-  ask "Copy the plotter ($REV) to the ESP32 on $PORT?" || abort "nothing changed"
-  local args=() f f2 stale
+  say "Copying the plotter $REV ..."
+  local args=() f2 stale
   for f in "${UPLOAD[@]}"; do
-    # backup/config-<time>.json goes back as config.json, backup/customization-<time>.json likewise
-    if [[ $f == backup/* ]]; then f2=${f#backup/}; args+=(cp "$f" ":${f2%-*-*.json}.json" +)
+    # backup/<name>-<time>-<file> goes back under its own name
+    if [[ $f == backup/* ]]; then f2=${f#backup/$name-$stamp-}; args+=(cp "$f" ":$f2" +)
     else args+=(cp "$f" ":${f##*/}" +); fi
   done
   # Remove the other kind of each module: MicroPython would load a stale .py before a new .mpy
   stale=$(printf "'%s'," "${STALE[@]}")
-  $MPREMOTE connect "$PORT" exec "import os
+  run "copying the files" $MPREMOTE connect "$PORT" exec "import os
 for f in ($stale):
     try:
         os.remove(f)
     except OSError:
         pass" + "${args[@]}" exec "print('Files on the ESP32 now:')" + fs ls + reset
   remember "$name"
-  say "Done: the ESP32 restarts with $REV as '$name'."
-  local ap hn sfx; ap=$(custom ap | grep -oE "'ssid': '[^']*'" | cut -d"'" -f4 || true)
-  hn=$(custom hostname); sfx=${name#"${hn:-plotter}"}
-  if [[ $(custom networks) != @(|\[\]) ]]; then
-    echo "When it has joined your Wi-Fi: http://$name.local"
+  say "Done: $name restarts with $REV."
+  local ap sfx; ap=$(setting ap | python3 -c "import json, sys; print(json.load(sys.stdin).get('ssid', ''))" 2>/dev/null || true)
+  sfx=${name#"${board_hn:-plotter}"}
+  if [[ $(setting networks) != "[]" && -n $(setting networks) ]]; then
+    say "Open http://$name.local once it has joined your Wi-Fi (its OLED shows the address)."
   else
-    echo "Connect to its Wi-Fi '${ap:-ESP32-Plotter}$sfx' and open http://192.168.4.1"
+    say "Connect to its Wi-Fi '${ap:-ESP32-Plotter}$sfx' and open http://192.168.4.1"
   fi
-  echo "Don't open the serial port (Thonny, mpremote) while it runs: that stops the plotter."
+  detail "don't open the serial port (Thonny, mpremote) while it runs: that stops the plotter"
 }
 
 # ---------- over Wi-Fi ----------
 wifi_flash() {
-  local pw host= found= h r code body
-  pw=$(custom ota_password)
-  [[ -n $pw ]] || die "updates over Wi-Fi need \"ota_password\" in customization.json (and a first install by USB)"
-  local hosts=() finds=() i
+  local pw host= found= h r code body hosts=() finds=() i
   for h in $(wifi_candidates); do
-    say "Looking for the plotter at $h"
+    detail "looking for the plotter at $h"
     r=$(probe "$h")
     [[ -n $r ]] && { hosts+=("$h"); finds+=("$r"); }
   done
   if (( ${#hosts[@]} > 1 )); then
-    echo "Several plotters answer:"
-    for i in "${!hosts[@]}"; do echo "  $((i + 1))) ${hosts[$i]}  (${finds[$i]//_/ })"; done
+    say "Several plotters answer:"
+    for i in "${!hosts[@]}"; do say "  $((i + 1))) ${hosts[$i]}  (${finds[$i]//_/ })"; done
     [[ -t 0 && $YES == 0 ]] || die "pick one: ./flash.sh <host>"
     read -r -p "Which one? [1-${#hosts[@]}] " i
     [[ $i =~ ^[0-9]+$ ]] && (( i >= 1 && i <= ${#hosts[@]} )) || die "no such choice"
@@ -423,53 +461,65 @@ wifi_flash() {
     host=${hosts[0]} found=${finds[0]}
   fi
   if [[ -z $host ]]; then
-    echo "No plotter found at: $(wifi_candidates | xargs)." >&2
+    echo "flash.sh: no plotter found on USB or at: $(wifi_candidates | xargs)." >&2
     echo "  - On its own access point? Connect this computer to that Wi-Fi first." >&2
     echo "  - On your Wi-Fi? Check the hostname, or give its IP (shown on the OLED): ./flash.sh 192.168.1.23" >&2
     echo "  - <name>.local needs mDNS on this computer (avahi / nss-mdns)." >&2
     exit 1
   fi
   set -- $found
-  local busy='^(running|paused|parking)$'
+  local busy='^(running|paused|parking)$' name=$host
   case $1 in
-    plotter) echo "Found the plotter '$4' (${2//_/ }) at $host (job: $3)."
+    plotter) name=$4; say "Found $name (${2//_/ }) at $host."
              if [[ $3 =~ $busy ]]; then die "a plot is in progress: let it finish or stop it first"; fi ;;
-    rescue)  echo "Found the board at $host in rescue mode (the plotter failed to start; its error is at http://$host/log)." ;;
+    rescue)  say "Found the board at $host in rescue mode (the plotter failed to start; its error is at http://$host/log)." ;;
   esac
+  name=${name//_/ }
+  if [[ $GETCAL == 1 ]]; then
+    [[ $1 == plotter ]] || die "in rescue mode the calibration can't be fetched; fix the plotter first"
+    mkdir -p boards
+    curl -fsS -m 10 -o "boards/$name-calibration.json" "http://$host/calibration" \
+      || die "$host doesn't hand out its calibration (it predates REV 18): update it first"
+    say "Calibration saved to boards/$name-calibration.json."
+    return
+  fi
+  pw=$(setting ota_password)
+  [[ -n $pw ]] || die "updates over Wi-Fi need \"ota_password\" in $SETTINGS (and a first install by USB)"
   body=$(curl -s -m 5 -w '\n%{http_code}' -u "ota:$pw" "http://$host/auth") || die "$host stopped answering"
   code=${body##*$'\n'}; body=${body%$'\n'*}
   case $code in
     200) MP_BOARD_VERSION=${body#OK } ;;
-    401) die "wrong ota_password for $host (customization.json)" ;;
+    401) die "wrong ota_password for $host ($SETTINGS)" ;;
     *)   if ! curl -fs -m 5 -o /dev/null "http://$host/files"; then
            die "$host can't be updated over Wi-Fi (it predates updates over Wi-Fi): flash it once by USB"
          fi
-         echo "(older version on the board: the password is checked with the first file)"
+         detail "older version on the board: the password is checked with the first file"
          MP_BOARD_VERSION= ;;
   esac
-  settings "$(curl -fs -m 5 "http://$host/files" || true)"
+  settings_note
   prepare
-  ask "Upload the plotter ($REV) to $host and restart it?" || die "nothing changed"
-  local f name try reply
-  for name in "${STALE[@]}"; do curl -s -m 10 -o /dev/null -u "ota:$pw" -X DELETE "http://$host/file/$name" || true; done
+  ask "Upload the plotter $REV to $name and restart it?" || die "nothing changed"
+  say "Uploading the plotter $REV ..."
+  local f n try reply
+  for n in "${STALE[@]}"; do curl -s -m 10 -o /dev/null -u "ota:$pw" -X DELETE "http://$host/file/$n" || true; done
   for f in "${UPLOAD[@]}"; do
-    name=$(basename "$f")
+    n=$(basename "$f")
     for try in 1 2 3; do
-      reply=$(curl -fsS -m 60 -u "ota:$pw" -T "$f" "http://$host/file/$name" 2>&1) && break
-      [[ $try == 3 ]] && die "$name: upload failed: $reply"
+      reply=$(curl -fsS -m 60 -u "ota:$pw" -T "$f" "http://$host/file/$n" 2>&1) && break
+      [[ $try == 3 ]] && die "$n: upload failed: $reply"
       sleep 2
     done
-    echo "    $name: $reply"
+    detail "$n: $reply"
   done
   curl -fsS -m 10 -u "ota:$pw" -X POST "http://$host/reset" >/dev/null || die "restart refused"
-  say "Restarting $host"
+  detail "restarting $host"
   # Until it stops answering at all (rescue mode answers 503, which still means "up")
   for _ in $(seq 1 20); do curl -s -o /dev/null -m 1 "http://$host/log" || break; sleep 0.5; done
   for _ in $(seq 1 45); do
     r=$(probe "$host"); [[ -n $r ]] && break; sleep 1
   done
   case $r in
-    "plotter ${REV// /_} "*) say "Done: $host runs $REV." ;;
+    "plotter ${REV// /_} "*) say "Done: $name runs $REV (http://$host)." ;;
     plotter*) die "$host is back but runs ${r#plotter } instead of $REV" ;;
     rescue) curl -s -m 5 "http://$host/log" | tail -n 12 >&2; die "$host is in rescue mode: the new plotter failed to start (log above)" ;;
     *) die "$host did not come back within a minute: it may have joined another network or opened its own access point" ;;
@@ -486,6 +536,6 @@ else
   pick_port
   if [[ -n $PORT ]]; then usb_flash
   elif [[ $FIRMWARE == 1 ]]; then die "no ESP32 on USB: installing MicroPython needs the USB cable"
-  else echo "No ESP32 on USB, trying Wi-Fi."; wifi_flash
+  else detail "no ESP32 on USB, trying Wi-Fi"; wifi_flash
   fi
 fi

@@ -1,0 +1,15 @@
+{
+  "_about": "Default board settings, uploaded with every update. Don't edit: copy it to board_settings.json (next to flash.sh, not in git) and change it there; flash.sh sends board_settings.json to the board. Settings that differ by chip are maps: \"*\" for any chip, or a chip name (ESP32, ESP32C3, ESP32S3 ...).",
+  "hostname": "plotter",
+  "mac_suffix": true,
+  "networks": [],
+  "ota_password": "",
+  "ap": {"ssid": "ESP32-Plotter", "password": "plotterpassword"},
+  "txpower": {"*": null, "ESP32C3": 13},
+  "oled": {"*": false, "ESP32C3": true},
+  "led": {"*": false, "ESP32C3": {"pin": 8, "active_low": true}, "ESP32": {"pin": 2, "active_low": false}},
+  "pins": {"*": {"shoulder": 0, "elbow": 1, "pen": 3},
+           "ESP32": {"shoulder": 25, "elbow": 26, "pen": 27},
+           "ESP32S2": {"shoulder": 4, "elbow": 5, "pen": 6},
+           "ESP32S3": {"shoulder": 4, "elbow": 5, "pen": 6}}
+}

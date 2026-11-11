@@ -117,28 +117,28 @@
 <div class="card">
   <h4>7. Live Calibration</h4>
   <div class="grid">
-    <div>S1 Park: <input class="cfg" type="number" id="s1_ang" value="-90.0" step="1"></div>
-    <div>S2 Park: <input class="cfg" type="number" id="s2_ang" value="90.0" step="1"></div>
-    <div>S1 Slope: <input class="cfg" type="number" id="s1_slope" value="-10.0" step="0.5"></div>
-    <div>S2 Slope: <input class="cfg" type="number" id="s2_slope" value="10.0" step="0.5"></div>
-    <div>Pen Up (us): <input class="cfg" type="number" id="pen_up" value="1450" step="10"></div>
-    <div>Pen Down (us): <input class="cfg" type="number" id="pen_down" value="1850" step="10"></div>
+    <div>S1 Park: <input class="cfg" type="number" id="s1_ang" step="1"></div>
+    <div>S2 Park: <input class="cfg" type="number" id="s2_ang" step="1"></div>
+    <div>S1 Slope: <input class="cfg" type="number" id="s1_slope" step="0.5"></div>
+    <div>S2 Slope: <input class="cfg" type="number" id="s2_slope" step="0.5"></div>
+    <div>Pen Up (us): <input class="cfg" type="number" id="pen_up" step="10"></div>
+    <div>Pen Down (us): <input class="cfg" type="number" id="pen_down" step="10"></div>
   </div>
   <h4>Motion</h4>
   <div class="grid">
-    <div>Speed (mm/s): <input class="cfg" type="number" id="speed" value="25" min="2" max="100" step="1"></div>
+    <div>Speed (mm/s): <input class="cfg" type="number" id="speed" min="2" max="100" step="1"></div>
     <div></div>
-    <div>S1 Hysteresis (us): <input class="cfg" type="number" id="s1_hyst" value="0" step="1"></div>
-    <div>S2 Hysteresis (us): <input class="cfg" type="number" id="s2_hyst" value="0" step="1"></div>
+    <div>S1 Hysteresis (us): <input class="cfg" type="number" id="s1_hyst" step="1"></div>
+    <div>S2 Hysteresis (us): <input class="cfg" type="number" id="s2_hyst" step="1"></div>
   </div>
   <h4>Arms and Drawing Area (mm)</h4>
   <div class="grid">
-    <div>Inner arm L1: <input class="cfg" type="number" id="L1" value="80" step="1"></div>
-    <div>Outer arm L2: <input class="cfg" type="number" id="L2" value="80" step="1"></div>
-    <div>Area X min: <input class="cfg" type="number" id="bed_minx" value="-50" step="1"></div>
-    <div>Area X max: <input class="cfg" type="number" id="bed_maxx" value="50" step="1"></div>
-    <div>Area Y min: <input class="cfg" type="number" id="bed_miny" value="80" step="1"></div>
-    <div>Area Y max: <input class="cfg" type="number" id="bed_maxy" value="150" step="1"></div>
+    <div>Inner arm L1: <input class="cfg" type="number" id="L1" step="1"></div>
+    <div>Outer arm L2: <input class="cfg" type="number" id="L2" step="1"></div>
+    <div>Area X min: <input class="cfg" type="number" id="bed_minx" step="1"></div>
+    <div>Area X max: <input class="cfg" type="number" id="bed_maxx" step="1"></div>
+    <div>Area Y min: <input class="cfg" type="number" id="bed_miny" step="1"></div>
+    <div>Area Y max: <input class="cfg" type="number" id="bed_maxy" step="1"></div>
     <div>View: <select class="cfg" id="flip"><option value="0">from behind the robot</option>
       <option value="1">from the paper side</option></select></div>
   </div>
@@ -153,9 +153,10 @@
 <div class="card">
   <h4>8. Precise Calibration (optional)</h4>
   <div style="font-size:12px; color:#555; margin-bottom:6px;">
-    For more precise drawings: measure where each servo really is, on the BrachioGraph template
-    (<a href="https://www.brachiograph.art/_downloads/94e7b4ab642ebc644e516e616c26aaa3/template-grid.pdf">template-grid.pdf</a>,
-    printed at 100 %, made for 80 mm arms). Lay the robot on it with the shoulder pivot exactly on 0,0.
+    For more precise drawings: measure where each servo really is, on the two A4 templates
+    (<a href="https://github.com/tentator/brachiograph-esp32-nfd/raw/main/images/template-a4-front.pdf">front</a> and
+    <a href="https://github.com/tentator/brachiograph-esp32-nfd/raw/main/images/template-a4-back.pdf">back</a>,
+    printed at 100 %, made for 80 mm arms), both on the robot's two pins, the back one turned round behind it.
     The page names a line; move the arm onto it with the fine buttons, then press <b>Here</b>.
     The measured points replace S1/S2 Park and Slope.</div>
   <div class="readout" id="calInfo">Shoulder: Park/Slope | Elbow: Park/Slope</div>
@@ -502,7 +503,7 @@ function autoFitBed() {
   status.innerText = `Auto-fit: ${Math.round(best.w)} x ${Math.round(h)} mm - press Apply Config to use it`;
 }
 
-// ---------- Precise calibration on the BrachioGraph template (optional) ----------
+// ---------- Precise calibration on the two A4 templates (optional) ----------
 // Shoulder: the upper arm (shoulder pivot -> elbow pivot) onto the red lines.
 // Elbow: with the shoulder at 0 deg (upper arm straight ahead, elbow over 0,8), the forearm
 // (elbow pivot -> pen) onto the blue lines, which give the angle relative to the upper arm.
